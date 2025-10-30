@@ -181,6 +181,7 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName 
 	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
         if src := NextIPv6LocalAddr(); src != nil {
             d.LocalAddr = &net.TCPAddr{IP: src}
+            log.Printf("[route] bind_src_ipv6=%s target_host=%s", src.String(), serverName)
         }
 	}
 	tcpConn, err := d.DialContext(ctx, network, address)
