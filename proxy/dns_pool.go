@@ -158,24 +158,10 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
 			return "", false, e
 		}
 	}
-	allowV4 := HasIPv4()
-	allowV6 := HasIPv6()
-	// 自适应：若两族均可用，则优先选择 EWMA 更小的一族；若未知，使用交替探索
-	tryV6First := false
-	if allowV4 && allowV6 {
-		const unknown = 0.0
-		if rec.EwmaLatency4 == unknown && rec.EwmaLatency6 == unknown {
-			tryV6First = rec.NextPreferV6
-		} else if rec.EwmaLatency4 == unknown {
-			tryV6First = true
-		} else if rec.EwmaLatency6 == unknown {
-			tryV6First = false
-		} else {
-			tryV6First = rec.EwmaLatency6 <= rec.EwmaLatency4
-		}
-	} else if allowV6 {
-		tryV6First = true
-	}
+    allowV4 := HasIPv4()
+    allowV6 := HasIPv6()
+    // 严格轮询：两族都可用时按 NextPreferV6 交替；否则按可用族
+    tryV6First := allowV6 && (!allowV4 || rec.NextPreferV6)
 	// 先尝试V6
 	if tryV6First && len(rec.IPv6) > 0 {
 		for i := 0; i < len(rec.IPv6); i++ {
