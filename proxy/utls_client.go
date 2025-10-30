@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	configPkg "vps-rpc/config"
@@ -28,6 +29,10 @@ type UTLSClient struct {
 	config *UTLSConfig
 	// dns DNS 池实例（可选）
 	dns *DNSPool
+    // 连接复用：按 host 缓存 http.Client（h2/h1 分开）
+    mu        sync.Mutex
+    h2Clients map[string]*http.Client
+    h1Clients map[string]*http.Client
 }
 
 // UTLSConfig 是uTLS客户端配置
@@ -57,7 +62,7 @@ func NewUTLSClient(cfg *UTLSConfig) *UTLSClient {
 		cfg.Timeout = 30 * time.Second
 	}
 
-	client := &UTLSClient{config: cfg}
+    client := &UTLSClient{config: cfg, h2Clients: map[string]*http.Client{}, h1Clients: map[string]*http.Client{}}
 	// 复用全局DNS池
 	if gp := GetGlobalDNSPool(); gp != nil {
 		client.dns = gp
@@ -197,27 +202,54 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName 
 
 // buildHTTP2Client 基于 http2.Transport + uTLS 的 http.Client
 func (c *UTLSClient) buildHTTP2Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
-	tr := &http2.Transport{
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			return c.dialUTLS(ctx, network, address, host, helloID, []string{"h2"})
-		},
-	}
-	return &http.Client{Timeout: c.config.Timeout, Transport: tr}
+    tr := &http2.Transport{
+        DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+            return c.dialUTLS(ctx, network, address, host, helloID, []string{"h2"})
+        },
+        ReadIdleTimeout: 30 * time.Second,
+    }
+    return &http.Client{Timeout: c.config.Timeout, Transport: tr}
 }
 
 // buildHTTP1Client 基于 http.Transport + uTLS 的 http.Client（HTTP/1.1）
 func (c *UTLSClient) buildHTTP1Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
-	tr := &http.Transport{
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return c.dialUTLS(ctx, network, address, host, helloID, []string{"http/1.1"})
-		},
-		TLSHandshakeTimeout:   c.config.Timeout,
-		ForceAttemptHTTP2:     false,
-		MaxIdleConns:          0,
-		DisableKeepAlives:     true,
-		ResponseHeaderTimeout: c.config.Timeout,
-	}
-	return &http.Client{Timeout: c.config.Timeout, Transport: tr}
+    tr := &http.Transport{
+        DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+            return c.dialUTLS(ctx, network, address, host, helloID, []string{"http/1.1"})
+        },
+        TLSHandshakeTimeout:   c.config.Timeout,
+        ForceAttemptHTTP2:     false,
+        MaxIdleConns:          100,
+        MaxIdleConnsPerHost:   10,
+        IdleConnTimeout:       60 * time.Second,
+        DisableKeepAlives:     false,
+        ResponseHeaderTimeout: c.config.Timeout,
+    }
+    return &http.Client{Timeout: c.config.Timeout, Transport: tr}
+}
+
+// 获取/创建可复用的 h2 客户端
+func (c *UTLSClient) getOrCreateH2Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    if cli, ok := c.h2Clients[host]; ok && cli != nil {
+        return cli
+    }
+    cli := c.buildHTTP2Client(host, address, helloID)
+    c.h2Clients[host] = cli
+    return cli
+}
+
+// 获取/创建可复用的 h1 客户端
+func (c *UTLSClient) getOrCreateH1Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    if cli, ok := c.h1Clients[host]; ok && cli != nil {
+        return cli
+    }
+    cli := c.buildHTTP1Client(host, address, helloID)
+    c.h1Clients[host] = cli
+    return cli
 }
 
 // Fetch 发起HTTP请求
@@ -236,7 +268,7 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 	timeoutCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
 	defer cancel()
 
-	// 解析目标
+    // 解析目标
 	host := extractHost(req.Url)
 	addr := extractHostPort(req.Url)
 	if host == "" || addr == "" {
@@ -244,26 +276,28 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 	}
 
 	// 若启用DNS池，选择一个直连IP作为目标地址（保持 SNI/Host 为原域名）
-	var selectedIP string
-	if c.dns != nil {
-		if ip, _, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
-			selectedIP = ip
-			// 仅替换拨号地址，端口保持443/80按原URL
-			parsed, _ := url.Parse(req.Url)
-			port := "443"
-			if parsed != nil && parsed.Scheme == "http" {
-				port = "80"
-			}
-			addr = net.JoinHostPort(ip, port)
-		}
-	}
+    var selectedIP string
+    var selectedIsV6 bool
+    if c.dns != nil {
+        if ip, isV6, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
+            selectedIP = ip
+            selectedIsV6 = isV6
+            // 仅替换拨号地址，端口保持443/80按原URL
+            parsed, _ := url.Parse(req.Url)
+            port := "443"
+            if parsed != nil && parsed.Scheme == "http" {
+                port = "80"
+            }
+            addr = net.JoinHostPort(ip, port)
+        }
+    }
 
 	// 构造请求
 	httpReq, err := http.NewRequestWithContext(timeoutCtx, "GET", req.Url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
-	// 先合并配置默认头（只在未被设置时生效）
+    // 先合并配置默认头（只在未被设置时生效）
 	if len(configPkg.AppConfig.Crawler.DefaultHeaders) > 0 {
 		for k, v := range configPkg.AppConfig.Crawler.DefaultHeaders {
 			if httpReq.Header.Get(k) == "" {
@@ -282,7 +316,7 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		httpReq.Host = host
 	}
 
-	// 若所选IP已被新近拉黑，则重新选择或回退域名
+    // 若所选IP已被新近拉黑，则重新选择或回退域名
 	if selectedIP != "" && c.dns != nil {
 		if banned, _ := c.dns.IsBlacklisted(host, selectedIP); banned {
 			selectedIP = ""
@@ -293,8 +327,8 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 				if parsed != nil && parsed.Scheme == "http" {
 					port = "80"
 				}
-				addr = net.JoinHostPort(ip2, port)
-				selectedIP = ip2
+                addr = net.JoinHostPort(ip2, port)
+                selectedIP = ip2
 			} else {
 				// 回退域名
 				addr = extractHostPort(req.Url)
@@ -302,20 +336,22 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		}
 	}
 
+    // 路由日志：明确 IPv4/IPv6 与目标
+    if selectedIP != "" {
+        log.Printf("[route] target=%s via_ip=%s ipv6=%v dial_addr=%s", host, selectedIP, selectedIsV6, addr)
+    } else {
+        log.Printf("[route] target=%s via_domain dial_addr=%s", host, addr)
+    }
+
 	// uTLS 指纹
 	chid := c.getClientHelloID()
 
 	// 1) 优先 HTTP/2 + uTLS
-	h2c := c.buildHTTP2Client(host, addr, chid)
-	// 不再写死 TE 等头部，全部由配置或请求传入
-	// 记录即将发送的请求头（HTTP/2 分支，注意部分头会被 http2 内部改写/剔除，例如 Connection）
+    h2c := c.getOrCreateH2Client(host, addr, chid)
+    // 不再写死 TE 等头部，全部由配置或请求传入
+    // 记录即将发送的请求头（HTTP/2 分支，注意部分头会被 http2 内部改写/剔除，例如 Connection）
 	{
-		log.Printf("[utls][h2] 准备发送请求: %s", httpReq.URL.String())
-		for k, v := range httpReq.Header {
-			if len(v) > 0 {
-				log.Printf("[utls][h2] Request-Header %s: %s", k, v[0])
-			}
-		}
+        log.Printf("[utls][h2] 准备发送请求: %s", httpReq.URL.String())
 	}
 	resp, err := h2c.Do(httpReq)
 	if err == nil {
@@ -339,16 +375,11 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 	errH2 := err
 
 	// 2) 回退 HTTP/1.1 + uTLS
-	h1c := c.buildHTTP1Client(host, addr, chid)
-	// 不再写死 Connection 行为，由 Transport 与外部头共同决定
-	// 记录即将发送的请求头（HTTP/1.1 分支）
+    h1c := c.getOrCreateH1Client(host, addr, chid)
+    // 不再写死 Connection 行为，由 Transport 与外部头共同决定
+    // 记录即将发送的请求头（HTTP/1.1 分支）
 	{
-		log.Printf("[utls][h1] 准备发送请求: %s", httpReq.URL.String())
-		for k, v := range httpReq.Header {
-			if len(v) > 0 {
-				log.Printf("[utls][h1] Request-Header %s: %s", k, v[0])
-			}
-		}
+        log.Printf("[utls][h1] 准备发送请求: %s", httpReq.URL.String())
 	}
 	resp, err = h1c.Do(httpReq)
 	if err == nil {
