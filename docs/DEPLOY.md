@@ -60,3 +60,25 @@ sudo systemctl enable --now vps-rpc
 - 建议仅对受信主体开放 gRPC 端口。
 - 后续版本将引入 mTLS（Peer 通道）。
 
+## 自动部署脚本（SSH）
+
+- 本地执行（需可 SSH 到目标主机）：
+```bash
+SSH_HOST=your.server SSH_USER=root APP_DIR=/opt/vps-rpc SERVICE=vps-rpc \
+bash scripts/deploy.sh
+```
+
+变量说明：
+- SSH_HOST: 目标主机（必填）
+- SSH_USER: SSH 用户（默认 root）
+- SSH_PORT: 端口（默认 22）
+- APP_DIR: 部署目录（默认 /opt/vps-rpc）
+- SERVICE: systemd 服务名（默认 vps-rpc）
+
+## GitHub Actions 自动部署（可选）
+
+- 在仓库 Secrets 设置以下变量：
+  - DEPLOY_HOST, DEPLOY_USER, DEPLOY_KEY(私钥), DEPLOY_PORT(可选)
+  - DEPLOY_APP_DIR(默认 /opt/vps-rpc), DEPLOY_SERVICE(默认 vps-rpc)
+- 推送到 `main` 将触发 `.github/workflows/deploy.yml`，自动构建并通过 SSH 上传与重启服务。
+
