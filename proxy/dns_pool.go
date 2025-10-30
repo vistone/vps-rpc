@@ -61,47 +61,55 @@ func (p *DNSPool) Close() error {
 
 // resolveAndStore 解析域名A/AAAA并存储
 func (p *DNSPool) resolveAndStore(ctx context.Context, domain string) (*dnsRecord, error) {
-    var rec dnsRecord
-    rec.Domain = domain
+	var rec dnsRecord
+	rec.Domain = domain
 
-    // 使用系统解析器 + 公共解析器联合查询，合并去重
-    type resSpec struct{ network, address string }
-    resolvers := []resSpec{
-        {"", ""}, // 系统解析器
-        {"udp", "8.8.8.8:53"},
-        {"udp", "1.1.1.1:53"},
-    }
-    uniq4 := map[string]struct{}{}
-    uniq6 := map[string]struct{}{}
-    for _, rs := range resolvers {
-        var r *net.Resolver
-        if rs.address == "" {
-            r = &net.Resolver{}
-        } else {
-            r = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-                d := net.Dialer{Timeout: 2 * time.Second}
-                return d.DialContext(ctx, rs.network, rs.address)
-            }}
-        }
-        if addrs4, err := r.LookupIP(ctx, "ip4", domain); err == nil {
-            for _, ip := range addrs4 { uniq4[ip.String()] = struct{}{} }
-        }
-        if addrs6, err := r.LookupIP(ctx, "ip6", domain); err == nil {
-            for _, ip := range addrs6 { uniq6[ip.String()] = struct{}{} }
-        }
-    }
-    for ip := range uniq4 { rec.IPv4 = append(rec.IPv4, ip) }
-    for ip := range uniq6 { rec.IPv6 = append(rec.IPv6, ip) }
-    rec.UpdatedAt = time.Now().Unix()
+	// 使用系统解析器 + 公共解析器联合查询，合并去重
+	type resSpec struct{ network, address string }
+	resolvers := []resSpec{
+		{"", ""}, // 系统解析器
+		{"udp", "8.8.8.8:53"},
+		{"udp", "1.1.1.1:53"},
+	}
+	uniq4 := map[string]struct{}{}
+	uniq6 := map[string]struct{}{}
+	for _, rs := range resolvers {
+		var r *net.Resolver
+		if rs.address == "" {
+			r = &net.Resolver{}
+		} else {
+			r = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := net.Dialer{Timeout: 2 * time.Second}
+				return d.DialContext(ctx, rs.network, rs.address)
+			}}
+		}
+		if addrs4, err := r.LookupIP(ctx, "ip4", domain); err == nil {
+			for _, ip := range addrs4 {
+				uniq4[ip.String()] = struct{}{}
+			}
+		}
+		if addrs6, err := r.LookupIP(ctx, "ip6", domain); err == nil {
+			for _, ip := range addrs6 {
+				uniq6[ip.String()] = struct{}{}
+			}
+		}
+	}
+	for ip := range uniq4 {
+		rec.IPv4 = append(rec.IPv4, ip)
+	}
+	for ip := range uniq6 {
+		rec.IPv6 = append(rec.IPv6, ip)
+	}
+	rec.UpdatedAt = time.Now().Unix()
 
 	if len(rec.IPv4) == 0 && len(rec.IPv6) == 0 {
 		return nil, fmt.Errorf("DNS 无记录: %s", domain)
 	}
 
-    if err := p.save(&rec); err != nil {
+	if err := p.save(&rec); err != nil {
 		return nil, err
 	}
-    log.Printf("[dns] %s A=%d AAAA=%d", domain, len(rec.IPv4), len(rec.IPv6))
+	log.Printf("[dns] %s A=%d AAAA=%d", domain, len(rec.IPv4), len(rec.IPv6))
 	return &rec, nil
 }
 
