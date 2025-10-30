@@ -51,3 +51,9 @@ bumped version: 1.0.12 -> 1.0.13
 To https://github.com/vistone/vps-rpc.git
    ed4e3a5..3f5bc47  main -> main
 分支 'main' 设置为跟踪 'origin/main'。
+bumped version: 1.0.13 -> 1.0.14
+[main 745c0c5] chore(auto): save work @ 2025-10-30 17:30:30
+ 3 files changed, 8 insertions(+), 2 deletions(-)
+To https://github.com/vistone/vps-rpc.git
+   3f5bc47..745c0c5  main -> main
+分支 'main' 设置为跟踪 'origin/main'。
