@@ -53,7 +53,7 @@ multiplier = 2.0
 [admin]
 # 管理服务配置
 # 服务器版本号
-version = "1.0.153"
+version = "1.0.154"
 # 日志缓冲区大小（最多保存的日志条目数量）
 log_buffer_size = 1000
 # 默认最大日志行数
