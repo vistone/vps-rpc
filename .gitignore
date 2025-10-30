@@ -1,0 +1,4 @@
+# IDE
+.idea/
+# Optionally ignore workflow until PAT has workflow scope
+.github/workflows/deploy.yml
