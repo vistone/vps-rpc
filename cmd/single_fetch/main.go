@@ -1,0 +1,65 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"vps-rpc/client"
+	"vps-rpc/config"
+	"vps-rpc/rpc"
+)
+
+func main() {
+	if err := config.LoadConfig("./config.toml"); err != nil {
+		fmt.Println("加载配置失败:", err)
+		return
+	}
+
+	cli, err := client.NewClient(&client.ClientConfig{
+		Address:              config.AppConfig.GetServerAddr(),
+		Timeout:              config.AppConfig.GetClientDefaultTimeout(),
+		InsecureSkipVerify:   true,
+		EnableConnectionPool: false,
+		EnableRetry:          false,
+	})
+	if err != nil {
+		fmt.Println("创建客户端失败:", err)
+		return
+	}
+	defer cli.Close()
+
+    url := "https://kh.google.com/rt/earth/PlanetoidMetadata"
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+    // 模拟浏览器常见请求头（如需严格对齐，可进一步调整）
+    headers := map[string]string{
+        "Accept":           "*/*",
+        "Accept-Encoding":  "gzip, deflate, br, zstd",
+        "Accept-Language":  "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
+        "Origin":           "https://earth.google.com",
+        "Referer":          "https://earth.google.com/",
+        "Sec-Fetch-Dest":   "empty",
+        "Sec-Fetch-Mode":   "cors",
+        "Sec-Fetch-Site":   "same-site",
+        "TE":               "trailers",
+    }
+
+    resp, err := cli.Fetch(ctx, &rpc.FetchRequest{Url: url, Headers: headers})
+	if err != nil {
+		fmt.Println("请求失败:", err)
+		return
+	}
+	if resp.Error != "" {
+		fmt.Printf("返回错误: %s\n", resp.Error)
+		return
+	}
+    fmt.Printf("URL=%s\nStatus=%d\nBody=%d bytes\n", resp.Url, resp.StatusCode, len(resp.Body))
+    fmt.Println("Headers:")
+    for k, v := range resp.Headers {
+        fmt.Printf("  %s: %s\n", k, v)
+    }
+}
+
+

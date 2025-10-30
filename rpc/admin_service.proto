@@ -1,0 +1,158 @@
+syntax = "proto3";
+
+package rpc;
+option go_package = "./rpc";
+
+// 管理服务定义
+service AdminService {
+  // 获取服务器状态
+  rpc GetStatus(StatusRequest) returns (StatusResponse);
+  
+  // 获取统计信息
+  rpc GetStats(StatsRequest) returns (StatsResponse);
+  
+  // 更新配置
+  rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
+  
+  // 获取日志
+  rpc GetLogs(LogsRequest) returns (LogsResponse);
+  
+  // 健康检查
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  
+  // 获取连接信息
+  rpc GetConnections(ConnectionsRequest) returns (ConnectionsResponse);
+}
+
+// 状态请求
+message StatusRequest {
+}
+
+// 状态响应
+message StatusResponse {
+  // 服务器运行状态
+  bool running = 1;
+  // 启动时间（Unix时间戳）
+  int64 start_time = 2;
+  // 运行时长（秒）
+  int64 uptime_seconds = 3;
+  // 版本信息
+  string version = 4;
+  // 监听地址
+  string listen_address = 5;
+}
+
+// 统计请求
+message StatsRequest {
+  // 是否重置统计信息
+  bool reset = 1;
+}
+
+// 统计响应
+message StatsResponse {
+  // 总请求数
+  int64 total_requests = 1;
+  // 成功请求数
+  int64 success_requests = 2;
+  // 失败请求数
+  int64 error_requests = 3;
+  // 平均延迟（毫秒）
+  int64 average_latency_ms = 4;
+  // 最小延迟（毫秒）
+  int64 min_latency_ms = 5;
+  // 最大延迟（毫秒）
+  int64 max_latency_ms = 6;
+  // 当前并发连接数
+  int64 current_connections = 7;
+  // 错误统计（错误码 -> 次数）
+  map<string, int64> error_stats = 8;
+  // 统计开始时间（Unix时间戳）
+  int64 stats_start_time = 9;
+}
+
+// 更新配置请求
+message UpdateConfigRequest {
+  // 配置项名称
+  string config_key = 1;
+  // 配置项值（JSON格式）
+  string config_value = 2;
+}
+
+// 更新配置响应
+message UpdateConfigResponse {
+  // 是否成功
+  bool success = 1;
+  // 错误信息
+  string error = 2;
+  // 更新后的配置（JSON格式）
+  string updated_config = 3;
+}
+
+// 日志请求
+message LogsRequest {
+  // 日志级别（空表示所有级别）
+  string level = 1;
+  // 最大行数
+  int32 max_lines = 2;
+  // 是否实时（流式返回）
+  bool follow = 3;
+}
+
+// 日志响应
+message LogsResponse {
+  // 日志条目
+  repeated LogEntry entries = 1;
+  // 是否还有更多日志
+  bool has_more = 2;
+}
+
+// 日志条目
+message LogEntry {
+  // 时间戳（Unix时间戳）
+  int64 timestamp = 1;
+  // 日志级别
+  string level = 2;
+  // 日志消息
+  string message = 3;
+  // 附加字段（JSON格式）
+  string fields = 4;
+}
+
+// 健康检查请求
+message HealthCheckRequest {
+}
+
+// 健康检查响应
+message HealthCheckResponse {
+  // 健康状态
+  bool healthy = 1;
+  // 状态消息
+  string message = 2;
+  // 检查时间（Unix时间戳）
+  int64 check_time = 3;
+}
+
+// 连接信息请求
+message ConnectionsRequest {
+}
+
+// 连接信息响应
+message ConnectionsResponse {
+  // 连接信息列表
+  repeated ConnectionInfo connections = 1;
+  // 总连接数
+  int32 total_connections = 2;
+}
+
+// 连接信息
+message ConnectionInfo {
+  // 客户端地址
+  string client_address = 1;
+  // 连接时间（Unix时间戳）
+  int64 connect_time = 2;
+  // 最后活动时间（Unix时间戳）
+  int64 last_activity_time = 3;
+  // 状态
+  string state = 4;
+}
+
