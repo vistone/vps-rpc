@@ -25,10 +25,10 @@ type Config struct {
 	Client ClientConfig `toml:"client"`
 	// Admin 管理服务配置部分
 	Admin AdminConfig `toml:"admin"`
-    // DNS DNS池相关配置
-    DNS   DNSConfig   `toml:"dns"`
-    // Peer 对等节点配置（自举 seeds）
-    Peer  PeerConfig  `toml:"peer"`
+	// DNS DNS池相关配置
+	DNS DNSConfig `toml:"dns"`
+	// Peer 对等节点配置（自举 seeds）
+	Peer PeerConfig `toml:"peer"`
 }
 
 // ServerConfig 服务器配置
@@ -58,34 +58,33 @@ type QuicConfig struct {
 // CrawlerConfig 爬虫配置
 // 定义了爬虫行为的相关配置参数
 type CrawlerConfig struct {
-    // DefaultTimeout 默认超时时间
-    // 爬虫请求的默认超时时间
-    DefaultTimeout string `toml:"default_timeout"`
+	// DefaultTimeout 默认超时时间
+	// 爬虫请求的默认超时时间
+	DefaultTimeout string `toml:"default_timeout"`
 	// MaxConcurrentRequests 最大并发请求数
 	// 爬虫允许的最大并发请求数量
 	MaxConcurrentRequests int `toml:"max_concurrent_requests"`
 	// UserAgent 默认User-Agent
 	// 爬虫请求使用的默认User-Agent字符串
 	UserAgent string `toml:"user_agent"`
-    // DefaultHeaders 默认请求头（可在外部配置覆盖）
-    DefaultHeaders map[string]string `toml:"default_headers"`
+	// DefaultHeaders 默认请求头（可在外部配置覆盖）
+	DefaultHeaders map[string]string `toml:"default_headers"`
 }
 
 // DNSConfig DNS池配置
 // 控制是否启用DNS IP池、数据库路径、刷新间隔等
 type DNSConfig struct {
-    // Enabled 是否启用DNS池
-    Enabled bool `toml:"enabled"`
-    // DBPath 数据库存储路径（bbolt文件路径）
-    DBPath string `toml:"db_path"`
-    // RefreshInterval 过期刷新间隔
-    RefreshInterval string `toml:"refresh_interval"`
-    // BlacklistDuration 403 等异常结果的黑名单时长
-    BlacklistDuration string `toml:"blacklist_duration"`
-    // Resolvers 额外DNS解析器（全球多地区），格式 host:port，例如 "8.8.8.8:53"
-    Resolvers []string `toml:"resolvers"`
+	// Enabled 是否启用DNS池
+	Enabled bool `toml:"enabled"`
+	// DBPath 数据库存储路径（bbolt文件路径）
+	DBPath string `toml:"db_path"`
+	// RefreshInterval 过期刷新间隔
+	RefreshInterval string `toml:"refresh_interval"`
+	// BlacklistDuration 403 等异常结果的黑名单时长
+	BlacklistDuration string `toml:"blacklist_duration"`
+	// Resolvers 额外DNS解析器（全球多地区），格式 host:port，例如 "8.8.8.8:53"
+	Resolvers []string `toml:"resolvers"`
 }
-
 
 // TLSConfig TLS配置
 // 定义了TLS相关的行为配置
@@ -158,8 +157,8 @@ type AdminConfig struct {
 
 // PeerConfig 对等节点自举配置
 type PeerConfig struct {
-    // Seeds 自举种子列表（域名或 IP:端口）
-    Seeds []string `toml:"seeds"`
+	// Seeds 自举种子列表（域名或 IP:端口）
+	Seeds []string `toml:"seeds"`
 }
 
 // AppConfig 全局配置变量
@@ -192,8 +191,8 @@ func LoadConfig(filename string) error {
 //
 //	string: 格式为"host:port"的服务器地址字符串
 func (c *Config) GetServerAddr() string {
-    // 不再从配置读取 Host，统一使用 0.0.0.0 作为绑定地址
-    return "0.0.0.0:" + strconv.Itoa(c.Server.Port)
+	// 不再从配置读取 Host，统一使用 0.0.0.0 作为绑定地址
+	return "0.0.0.0:" + strconv.Itoa(c.Server.Port)
 }
 
 // GetQuicMaxIdleTimeout 获取QUIC最大空闲超时
