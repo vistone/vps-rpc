@@ -158,10 +158,10 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
 			return "", false, e
 		}
 	}
-    allowV4 := HasIPv4()
-    allowV6 := HasIPv6()
-    // 严格轮询：两族都可用时按 NextPreferV6 交替；否则按可用族
-    tryV6First := allowV6 && (!allowV4 || rec.NextPreferV6)
+	allowV4 := HasIPv4()
+	allowV6 := HasIPv6()
+	// 严格轮询：两族都可用时按 NextPreferV6 交替；否则按可用族
+	tryV6First := allowV6 && (!allowV4 || rec.NextPreferV6)
 	// 先尝试V6
 	if tryV6First && len(rec.IPv6) > 0 {
 		for i := 0; i < len(rec.IPv6); i++ {
