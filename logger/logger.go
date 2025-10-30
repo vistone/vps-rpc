@@ -2,6 +2,7 @@ package logger
 
 import (
 	"io"
+	"io/ioutil"
 	"os"
 	"sync"
 	"time"
@@ -46,6 +47,100 @@ const (
 // logrusLogger logrus实现的Logger
 type logrusLogger struct {
 	logger *logrus.Logger
+}
+
+// logSplitHook 将不同级别的日志分别写入各自文件
+type logSplitHook struct {
+	writers map[logrus.Level]*sizeCappedWriter
+}
+
+func (h *logSplitHook) Levels() []logrus.Level {
+	return []logrus.Level{
+		logrus.DebugLevel, logrus.InfoLevel, logrus.WarnLevel, logrus.ErrorLevel, logrus.FatalLevel,
+	}
+}
+
+func (h *logSplitHook) Fire(entry *logrus.Entry) error {
+	w, ok := h.writers[entry.Level]
+	if !ok || w == nil {
+		return nil
+	}
+	line, err := entry.String()
+	if err != nil {
+		return err
+	}
+	_, err = w.Write([]byte(line))
+	return err
+}
+
+// sizeCappedWriter 将日志写入运行目录文件，超过阈值自动清空
+type sizeCappedWriter struct {
+	filePath string
+	maxBytes int64
+	file     *os.File
+	mutex    sync.Mutex
+}
+
+func newSizeCappedWriter(filePath string, maxBytes int64) (*sizeCappedWriter, error) {
+	w := &sizeCappedWriter{filePath: filePath, maxBytes: maxBytes}
+	if err := w.open(); err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+func (w *sizeCappedWriter) open() error {
+	// 确保目录存在（运行目录通常已存在）
+	f, err := os.OpenFile(w.filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	w.file = f
+	return nil
+}
+
+func (w *sizeCappedWriter) ensureCapacity(add int) error {
+	info, err := w.file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size()+int64(add) <= w.maxBytes {
+		return nil
+	}
+	// 超出阈值：清空文件
+	if err := w.file.Close(); err != nil {
+		return err
+	}
+	// 以截断方式重建
+	f, err := os.OpenFile(w.filePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	w.file = f
+	return nil
+}
+
+func (w *sizeCappedWriter) Write(p []byte) (int, error) {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+	if w.file == nil {
+		if err := w.open(); err != nil {
+			return 0, err
+		}
+	}
+	if err := w.ensureCapacity(len(p)); err != nil {
+		return 0, err
+	}
+	return w.file.Write(p)
+}
+
+func (w *sizeCappedWriter) Close() error {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+	if w.file != nil {
+		return w.file.Close()
+	}
+	return nil
 }
 
 // NewLogger 创建新的日志器
@@ -94,8 +189,9 @@ func NewLogger(level LogLevel, format LogFormat, output io.Writer) Logger {
 	}
 
 	// 设置输出位置
+	// 默认输出到 stdout；若提供 output，则合并为多路输出
 	if output != nil {
-		logger.SetOutput(output)
+		logger.SetOutput(io.MultiWriter(os.Stdout, output))
 	} else {
 		logger.SetOutput(os.Stdout)
 	}
@@ -115,7 +211,33 @@ func NewLoggerFromConfig(level string, format string) Logger {
 		logFormat = LogFormatText
 	}
 
-	return NewLogger(logLevel, logFormat, nil)
+	// 落盘到运行目录：vps-rpc.log（合并日志），100MB 超限自动清空
+	const maxBytes = 100 * 1024 * 1024
+	fileWriter, err := newSizeCappedWriter("./vps-rpc.log", maxBytes)
+	if err != nil {
+		_ = ioutil.WriteFile("./vps-rpc.log.init_error", []byte(err.Error()), 0644)
+		return NewLogger(logLevel, logFormat, nil)
+	}
+	base := NewLogger(logLevel, logFormat, fileWriter).(*logrusLogger)
+
+	// 按级别分别输出到独立文件
+	writers := map[logrus.Level]*sizeCappedWriter{}
+	if w, e := newSizeCappedWriter("./vps-rpc.debug.log", maxBytes); e == nil {
+		writers[logrus.DebugLevel] = w
+	}
+	if w, e := newSizeCappedWriter("./vps-rpc.info.log", maxBytes); e == nil {
+		writers[logrus.InfoLevel] = w
+	}
+	if w, e := newSizeCappedWriter("./vps-rpc.warn.log", maxBytes); e == nil {
+		writers[logrus.WarnLevel] = w
+	}
+	if w, e := newSizeCappedWriter("./vps-rpc.error.log", maxBytes); e == nil {
+		writers[logrus.ErrorLevel] = w
+		writers[logrus.FatalLevel] = w
+	}
+	base.logger.AddHook(&logSplitHook{writers: writers})
+
+	return base
 }
 
 // Debug 输出调试日志
@@ -262,4 +384,3 @@ func (b *LogBuffer) Size() int {
 	defer b.mutex.RUnlock()
 	return len(b.entries)
 }
-
