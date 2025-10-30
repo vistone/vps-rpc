@@ -82,6 +82,8 @@ type DNSConfig struct {
     RefreshInterval string `toml:"refresh_interval"`
     // BlacklistDuration 403 等异常结果的黑名单时长
     BlacklistDuration string `toml:"blacklist_duration"`
+    // Resolvers 额外DNS解析器（全球多地区），格式 host:port，例如 "8.8.8.8:53"
+    Resolvers []string `toml:"resolvers"`
 }
 
 
