@@ -64,32 +64,20 @@ func (p *DNSPool) resolveAndStore(ctx context.Context, domain string) (*dnsRecor
 	var rec dnsRecord
 	rec.Domain = domain
 
-	// 使用系统解析器 + 公共解析器联合查询，合并去重
-	type resSpec struct{ network, address string }
-	resolvers := []resSpec{{"", ""}} // 仅使用系统解析器（LookupIP）
-	uniq4 := map[string]struct{}{}
-	uniq6 := map[string]struct{}{}
-	for _, rs := range resolvers {
-		var r *net.Resolver
-		if rs.address == "" {
-			r = &net.Resolver{}
-		} else {
-			r = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				d := net.Dialer{Timeout: 2 * time.Second}
-				return d.DialContext(ctx, rs.network, rs.address)
-			}}
-		}
-		if addrs4, err := r.LookupIP(ctx, "ip4", domain); err == nil {
-			for _, ip := range addrs4 {
-				uniq4[ip.String()] = struct{}{}
-			}
-		}
-		if addrs6, err := r.LookupIP(ctx, "ip6", domain); err == nil {
-			for _, ip := range addrs6 {
-				uniq6[ip.String()] = struct{}{}
-			}
-		}
-	}
+    // 多次系统解析刺探，合并去重（某些CDN会轮转VIP）
+    uniq4 := map[string]struct{}{}
+    uniq6 := map[string]struct{}{}
+    r := &net.Resolver{}
+    attempts := 8
+    for i := 0; i < attempts; i++ {
+        if addrs4, err := r.LookupIP(ctx, "ip4", domain); err == nil {
+            for _, ip := range addrs4 { uniq4[ip.String()] = struct{}{} }
+        }
+        if addrs6, err := r.LookupIP(ctx, "ip6", domain); err == nil {
+            for _, ip := range addrs6 { uniq6[ip.String()] = struct{}{} }
+        }
+        time.Sleep(200 * time.Millisecond)
+    }
 	for ip := range uniq4 {
 		rec.IPv4 = append(rec.IPv4, ip)
 	}
