@@ -66,21 +66,7 @@ func (p *DNSPool) resolveAndStore(ctx context.Context, domain string) (*dnsRecor
 
 	// 使用系统解析器 + 公共解析器联合查询，合并去重
 	type resSpec struct{ network, address string }
-	resolvers := []resSpec{{"", ""}} // 系统解析器优先
-	// 追加来自配置的全球解析器
-	if len(config.AppConfig.DNS.Resolvers) > 0 {
-		for _, addr := range config.AppConfig.DNS.Resolvers {
-			resolvers = append(resolvers, resSpec{"udp", addr})
-		}
-	} else {
-		// 回退内置的常用公共解析器
-		resolvers = append(resolvers,
-			resSpec{"udp", "8.8.8.8:53"}, resSpec{"udp", "8.8.4.4:53"},
-			resSpec{"udp", "1.1.1.1:53"}, resSpec{"udp", "1.0.0.1:53"},
-			resSpec{"udp", "9.9.9.9:53"}, resSpec{"udp", "208.67.222.222:53"},
-			resSpec{"udp", "114.114.114.114:53"},
-		)
-	}
+    resolvers := []resSpec{{"", ""}} // 仅使用系统解析器（LookupIP）
 	uniq4 := map[string]struct{}{}
 	uniq6 := map[string]struct{}{}
 	for _, rs := range resolvers {
