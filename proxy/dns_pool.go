@@ -66,7 +66,7 @@ func (p *DNSPool) resolveAndStore(ctx context.Context, domain string) (*dnsRecor
 
 	// 使用系统解析器 + 公共解析器联合查询，合并去重
 	type resSpec struct{ network, address string }
-    resolvers := []resSpec{{"", ""}} // 仅使用系统解析器（LookupIP）
+	resolvers := []resSpec{{"", ""}} // 仅使用系统解析器（LookupIP）
 	uniq4 := map[string]struct{}{}
 	uniq6 := map[string]struct{}{}
 	for _, rs := range resolvers {
