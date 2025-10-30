@@ -64,20 +64,24 @@ func (p *DNSPool) resolveAndStore(ctx context.Context, domain string) (*dnsRecor
 	var rec dnsRecord
 	rec.Domain = domain
 
-    // 多次系统解析刺探，合并去重（某些CDN会轮转VIP）
-    uniq4 := map[string]struct{}{}
-    uniq6 := map[string]struct{}{}
-    r := &net.Resolver{}
-    attempts := 8
-    for i := 0; i < attempts; i++ {
-        if addrs4, err := r.LookupIP(ctx, "ip4", domain); err == nil {
-            for _, ip := range addrs4 { uniq4[ip.String()] = struct{}{} }
-        }
-        if addrs6, err := r.LookupIP(ctx, "ip6", domain); err == nil {
-            for _, ip := range addrs6 { uniq6[ip.String()] = struct{}{} }
-        }
-        time.Sleep(200 * time.Millisecond)
-    }
+	// 多次系统解析刺探，合并去重（某些CDN会轮转VIP）
+	uniq4 := map[string]struct{}{}
+	uniq6 := map[string]struct{}{}
+	r := &net.Resolver{}
+	attempts := 8
+	for i := 0; i < attempts; i++ {
+		if addrs4, err := r.LookupIP(ctx, "ip4", domain); err == nil {
+			for _, ip := range addrs4 {
+				uniq4[ip.String()] = struct{}{}
+			}
+		}
+		if addrs6, err := r.LookupIP(ctx, "ip6", domain); err == nil {
+			for _, ip := range addrs6 {
+				uniq6[ip.String()] = struct{}{}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 	for ip := range uniq4 {
 		rec.IPv4 = append(rec.IPv4, ip)
 	}
