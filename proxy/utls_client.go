@@ -176,13 +176,12 @@ func (c *UTLSClient) getClientHelloID() *utls.ClientHelloID {
 // dialUTLS 使用 uTLS 完成 TLS 握手并返回连接
 func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName string, helloID *utls.ClientHelloID, nextProtos []string) (net.Conn, error) {
 	d := &net.Dialer{Timeout: c.config.Timeout}
-	// 若目标是IPv6地址，自动发现并绑定一个本机IPv6源地址（如有）
+    // 若目标是IPv6地址，从本机IPv6池轮询一个源地址进行绑定（如有）
 	host, _, _ := net.SplitHostPort(address)
 	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-		v6addrs := DiscoverIPv6LocalAddrs()
-		if len(v6addrs) > 0 {
-			d.LocalAddr = &net.TCPAddr{IP: v6addrs[0]}
-		}
+        if src := NextIPv6LocalAddr(); src != nil {
+            d.LocalAddr = &net.TCPAddr{IP: src}
+        }
 	}
 	tcpConn, err := d.DialContext(ctx, network, address)
 	if err != nil {
@@ -353,7 +352,8 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 	{
         log.Printf("[utls][h2] 准备发送请求: %s", httpReq.URL.String())
 	}
-	resp, err := h2c.Do(httpReq)
+    start := time.Now()
+    resp, err := h2c.Do(httpReq)
 	if err == nil {
 		defer resp.Body.Close()
 		body, rerr := io.ReadAll(resp.Body)
@@ -367,9 +367,10 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 			}
 		}
 		// 记录IP结果（若启用DNS池且使用了直连IP）
-		if c.dns != nil && selectedIP != "" {
-			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
-		}
+        if c.dns != nil && selectedIP != "" {
+            _ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
+            _ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
+        }
 		return &rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, nil
 	}
 	errH2 := err
@@ -381,7 +382,8 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 	{
         log.Printf("[utls][h1] 准备发送请求: %s", httpReq.URL.String())
 	}
-	resp, err = h1c.Do(httpReq)
+    start = time.Now()
+    resp, err = h1c.Do(httpReq)
 	if err == nil {
 		defer resp.Body.Close()
 		body, rerr := io.ReadAll(resp.Body)
@@ -394,15 +396,17 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 				headers[k] = v[0]
 			}
 		}
-		if c.dns != nil && selectedIP != "" {
-			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
-		}
+        if c.dns != nil && selectedIP != "" {
+            _ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
+            _ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
+        }
 		return &rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, nil
 	}
 	errH1 := err
 
 	// 2.5) 进一步回退：标准 http.Client（系统 TLS），尽量保证功能成功
-	resp, err = (&http.Client{Timeout: c.config.Timeout}).Do(httpReq)
+    start = time.Now()
+    resp, err = (&http.Client{Timeout: c.config.Timeout}).Do(httpReq)
 	if err == nil {
 		defer resp.Body.Close()
 		body, rerr := io.ReadAll(resp.Body)
@@ -415,9 +419,10 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 				headers[k] = v[0]
 			}
 		}
-		if c.dns != nil && selectedIP != "" {
-			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
-		}
+        if c.dns != nil && selectedIP != "" {
+            _ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
+            _ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
+        }
 		return &rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, nil
 	}
 

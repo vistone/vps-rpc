@@ -26,6 +26,9 @@ type dnsRecord struct {
 	Blacklist map[string]bool `json:"blacklist"`
 	// Whitelist 白名单：通过复测恢复可用的 IP 集合
 	Whitelist map[string]bool `json:"whitelist"`
+	// EWMA 时延（毫秒）用于自适应族选择（0 表示未知）
+	EwmaLatency4 float64 `json:"ewma_latency4"`
+	EwmaLatency6 float64 `json:"ewma_latency6"`
 }
 
 type DNSPool struct {
@@ -157,8 +160,22 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
 	}
 	allowV4 := HasIPv4()
 	allowV6 := HasIPv6()
-	// 简单轮转：当同时支持时交替族，否则按可用族；默认优先V6
-	tryV6First := allowV6 && (!allowV4 || rec.NextPreferV6)
+	// 自适应：若两族均可用，则优先选择 EWMA 更小的一族；若未知，使用交替探索
+	tryV6First := false
+	if allowV4 && allowV6 {
+		const unknown = 0.0
+		if rec.EwmaLatency4 == unknown && rec.EwmaLatency6 == unknown {
+			tryV6First = rec.NextPreferV6
+		} else if rec.EwmaLatency4 == unknown {
+			tryV6First = true
+		} else if rec.EwmaLatency6 == unknown {
+			tryV6First = false
+		} else {
+			tryV6First = rec.EwmaLatency6 <= rec.EwmaLatency4
+		}
+	} else if allowV6 {
+		tryV6First = true
+	}
 	// 先尝试V6
 	if tryV6First && len(rec.IPv6) > 0 {
 		for i := 0; i < len(rec.IPv6); i++ {
@@ -234,6 +251,42 @@ func (p *DNSPool) ReportResult(domain, ip string, status int) error {
 		} else if status == 200 {
 			delete(rec.Blacklist, ip)
 			rec.Whitelist[ip] = true
+		}
+		data, _ := json.Marshal(&rec)
+		return b.Put([]byte(domain), data)
+	})
+}
+
+// ReportLatency 上报请求耗时（毫秒），用于更新 EWMA
+func (p *DNSPool) ReportLatency(domain, ip string, ms int64) error {
+	if p == nil || ip == "" || domain == "" || ms <= 0 {
+		return nil
+	}
+	const alpha = 0.3 // EWMA 平滑系数
+	return p.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("dns_records"))
+		v := b.Get([]byte(domain))
+		var rec dnsRecord
+		if v != nil {
+			_ = json.Unmarshal(v, &rec)
+		}
+		if rec.Domain == "" {
+			rec.Domain = domain
+		}
+		// 判定族
+		val := float64(ms)
+		if net.ParseIP(ip) != nil && net.ParseIP(ip).To4() == nil {
+			if rec.EwmaLatency6 == 0 {
+				rec.EwmaLatency6 = val
+			} else {
+				rec.EwmaLatency6 = alpha*val + (1-alpha)*rec.EwmaLatency6
+			}
+		} else {
+			if rec.EwmaLatency4 == 0 {
+				rec.EwmaLatency4 = val
+			} else {
+				rec.EwmaLatency4 = alpha*val + (1-alpha)*rec.EwmaLatency4
+			}
 		}
 		data, _ := json.Marshal(&rec)
 		return b.Put([]byte(domain), data)

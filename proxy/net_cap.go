@@ -2,6 +2,8 @@ package proxy
 
 import (
     "net"
+    "sync"
+    "time"
 )
 
 // HasIPv4 返回系统是否存在可用的 IPv4 出口（任意接口具备非回环IPv4）
@@ -48,6 +50,45 @@ func DiscoverIPv6LocalAddrs() []net.IP {
         }
     }
     return out
+}
+
+// 全局 IPv6 源地址池与轮询索引
+var (
+    v6PoolOnce sync.Once
+    v6Pool     []net.IP
+    v6Idx      int
+    v6Mu       sync.Mutex
+)
+
+// refreshV6Pool 定期刷新本机 IPv6 源地址池
+func refreshV6Pool() {
+    v6Mu.Lock()
+    defer v6Mu.Unlock()
+    v6Pool = DiscoverIPv6LocalAddrs()
+    if v6Idx >= len(v6Pool) { v6Idx = 0 }
+}
+
+// StartV6PoolRefresher 启动后台刷新任务（1分钟更新一次）
+func StartV6PoolRefresher() {
+    v6PoolOnce.Do(func() {
+        refreshV6Pool()
+        go func() {
+            ticker := time.NewTicker(1 * time.Minute)
+            defer ticker.Stop()
+            for range ticker.C { refreshV6Pool() }
+        }()
+    })
+}
+
+// NextIPv6LocalAddr 轮询返回一个本机 IPv6 源地址
+func NextIPv6LocalAddr() net.IP {
+    StartV6PoolRefresher()
+    v6Mu.Lock()
+    defer v6Mu.Unlock()
+    if len(v6Pool) == 0 { return nil }
+    ip := v6Pool[v6Idx]
+    v6Idx = (v6Idx + 1) % len(v6Pool)
+    return ip
 }
 
 
