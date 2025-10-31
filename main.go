@@ -29,8 +29,9 @@ func main() {
 		config.AppConfig.Logging.Format,
 	)
 
-	// 记录程序启动日志
-	log.Info("正在启动 VPS-RPC 爬虫代理服务器...")
+	// 记录程序启动日志（包含版本信息）
+	version := config.AppConfig.GetAdminVersion()
+	log.Infof("正在启动 VPS-RPC 爬虫代理服务器... 版本: %s", version)
 
 	// 创建统计收集器
 	stats := server.NewStatsCollector()
