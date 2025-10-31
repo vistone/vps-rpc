@@ -260,7 +260,7 @@ func (p *PeerSyncManager) Stop() {
 func (p *PeerSyncManager) periodicSync() {
 	defer p.wg.Done()
 
-	ticker := time.NewTicker(5 * time.Minute) // 每5分钟同步一次
+    ticker := time.NewTicker(5 * time.Second) // 加速：每5秒同步一次，接近即时发现
 	defer ticker.Stop()
 
 	// 首次同步
