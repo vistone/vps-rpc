@@ -210,12 +210,11 @@ func (c *UTLSClient) buildHTTP2Client(host, address string, helloID *utls.Client
         DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
             return c.dialUTLS(ctx, network, address, host, helloID, []string{"h2"})
         },
-        ReadIdleTimeout:       30 * time.Second,  // 连接空闲超时
-        PingTimeout:           15 * time.Second,   // Ping超时
-        WriteByteTimeout:      10 * time.Second,   // 写入超时
-        MaxReadFrameSize:      1 << 20,            // 1MB最大帧大小
-        PermitProhibitedCipherSuites: false,
-        AllowHTTP:             false,
+        ReadIdleTimeout:  30 * time.Second, // 连接空闲超时
+        PingTimeout:      15 * time.Second, // Ping超时
+        WriteByteTimeout: 10 * time.Second, // 写入超时
+        MaxReadFrameSize: 1 << 20,           // 1MB最大帧大小
+        AllowHTTP:        false,
     }
     return &http.Client{
         Timeout:   c.config.Timeout,
