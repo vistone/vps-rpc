@@ -114,7 +114,11 @@ func GenerateTLSConfig() (*tls.Config, error) {
 	certPath := filepath.Join("data", "tls", "server.pem")
 	keyPath := filepath.Join("data", "tls", "server.key")
 	if tlsCert, err := loadTLSFromFiles(certPath, keyPath); err == nil {
-		return &tls.Config{Certificates: []tls.Certificate{tlsCert}, NextProtos: []string{"h2"}}, nil
+		// QUIC兼容：设置NextProtos，允许QUIC和HTTP/2
+		return &tls.Config{
+			Certificates: []tls.Certificate{tlsCert},
+			NextProtos:   []string{"h3", "h2", "http/1.1"}, // QUIC优先
+		}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(certPath), 0o700); err != nil {
 		return nil, err
@@ -125,7 +129,11 @@ func GenerateTLSConfig() (*tls.Config, error) {
 	}
 	_ = os.WriteFile(certPath, certPEM, 0o600)
 	_ = os.WriteFile(keyPath, keyPEM, 0o600)
-	return &tls.Config{Certificates: []tls.Certificate{tlsCert}, NextProtos: []string{"h2"}}, nil
+	// QUIC兼容：设置NextProtos，允许QUIC和HTTP/2
+	return &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+		NextProtos:   []string{"h3", "h2", "http/1.1"}, // QUIC优先
+	}, nil
 }
 
 func loadTLSFromFiles(certFile, keyFile string) (tls.Certificate, error) {

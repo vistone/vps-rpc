@@ -25,6 +25,7 @@ type QuicClient struct {
 func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error) {
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: insecureSkipVerify,
+		NextProtos:         []string{"h3", "h2", "http/1.1"}, // QUIC ALPN协议
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
