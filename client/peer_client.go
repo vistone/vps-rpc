@@ -546,51 +546,52 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
 
     // 与对端交换DNS记录并合并入本地数据库
     if pool := proxy.GetGlobalDNSPool(); pool != nil {
-        // 构造本地记录：仅同步“白名单”中的IP（每个节点黑名单不同，不能同步黑名单）
+        // 构造本地记录：发送所有记录（包括IPv4/IPv6），不仅仅白名单
+        // 即使本地为空，也要发送请求以获取中心节点的DNS记录
         local := map[string]*rpc.DNSRecord{}
         ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
         all := pool.GetAllRecords(ctx2)
         cancel2()
+        log.Printf("[peer-sync] 准备交换DNS记录，本地记录数=%d", len(all))
         for domain, r := range all {
-            if r.Whitelist == nil || len(r.Whitelist) == 0 {
-                continue
-            }
-            var v4, v6 []string
-            for ip := range r.Whitelist {
-                parsed := net.ParseIP(ip)
-                if parsed == nil {
-                    continue
-                }
-                if parsed.To4() != nil {
-                    v4 = append(v4, ip)
-                } else {
-                    v6 = append(v6, ip)
+            // 发送所有IPv4和IPv6记录（不仅仅是白名单），让中心节点知道我们有哪些IP
+            if len(r.IPv4) > 0 || len(r.IPv6) > 0 {
+                local[domain] = &rpc.DNSRecord{
+                    Ipv4: append([]string(nil), r.IPv4...), // 发送所有IPv4
+                    Ipv6: append([]string(nil), r.IPv6...), // 发送所有IPv6
                 }
             }
-            if len(v4) == 0 && len(v6) == 0 {
-                continue
-            }
-            local[domain] = &rpc.DNSRecord{Ipv4: v4, Ipv6: v6}
         }
-        if len(local) > 0 { // 仅当有白名单数据时才交换，避免发送空消息
-            // 发送ExchangeDNS
-            ctx3, cancel3 := context.WithTimeout(context.Background(), 3*time.Second)
-            defer cancel3()
-            resp, err := client.ExchangeDNS(ctx3, &rpc.ExchangeDNSRequest{Records: local})
-            if err != nil {
-                if isTimeoutErr(err) {
-                    log.Printf("[debug][peer-sync] ExchangeDNS超时 %s: %v", peerAddr, err)
-                } else {
-                    log.Printf("[peer-sync] ExchangeDNS失败 %s: %v", peerAddr, err)
-                }
-            } else if len(resp.Records) > 0 {
+        log.Printf("[peer-sync] 构造的本地DNS记录数=%d（将发送到 %s）", len(local), peerAddr)
+        // 无论本地是否有记录，都发送ExchangeDNS请求，以获取中心节点的DNS记录
+        // 这样即使本地为空，也能从中心节点获取DNS记录
+        ctx3, cancel3 := context.WithTimeout(context.Background(), 3*time.Second)
+        defer cancel3()
+        resp, err := client.ExchangeDNS(ctx3, &rpc.ExchangeDNSRequest{Records: local})
+        if err != nil {
+            if isTimeoutErr(err) {
+                log.Printf("[peer-sync] ExchangeDNS超时 %s: %v", peerAddr, err)
+            } else {
+                log.Printf("[peer-sync] ExchangeDNS失败 %s: %v", peerAddr, err)
+            }
+        } else {
+            if len(resp.Records) > 0 {
+                log.Printf("[peer-sync] 收到来自 %s 的 %d 个域的DNS记录", peerAddr, len(resp.Records))
                 if err := pool.MergeFromPeer(resp.Records); err != nil {
                     log.Printf("[peer-sync] 合并对端DNS记录失败 %s: %v", peerAddr, err)
                 } else {
-                    log.Printf("[peer-sync] 已合并来自 %s 的 %d 个域的DNS记录", peerAddr, len(resp.Records))
+                    log.Printf("[peer-sync] ✅ 成功合并来自 %s 的 %d 个域的DNS记录到本地", peerAddr, len(resp.Records))
+                    // 合并后立即触发持久化，确保写入文件
+                    if err := pool.PersistNow(); err != nil {
+                        log.Printf("[peer-sync] 警告：合并后持久化失败: %v", err)
+                    }
                 }
+            } else {
+                log.Printf("[peer-sync] 来自 %s 的DNS记录为空（对方可能也没有记录）", peerAddr)
             }
         }
+    } else {
+        log.Printf("[peer-sync] 警告：DNS池未初始化，无法交换DNS记录")
     }
 
     log.Printf("[peer-sync] 与 %s 同步完成，本次返回=%d，当前已知节点总数=%d", peerAddr, len(peers), total)

@@ -166,6 +166,12 @@ func (p *DNSPool) persist() error {
     return nil
 }
 
+// PersistNow 立即持久化DNS池到文件（公开方法，用于peer同步后立即写入）
+func (p *DNSPool) PersistNow() error {
+    p.persistNow()
+    return nil
+}
+
 func (p *DNSPool) persistNow() {
     p.mu.RLock()
     recordCount := len(p.records)
