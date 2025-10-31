@@ -71,11 +71,22 @@ func NewDNSPool(path string) (*DNSPool, error) {
     }
     if err := pool.loadFromDisk(); err != nil {
         if !errors.Is(err, os.ErrNotExist) {
+            log.Printf("[dns-pool] 加载文件失败: %v (file=%s)", err, path)
             return nil, err
         }
+        // 文件不存在，这是正常的（首次启动）
+        log.Printf("[dns-pool] 文件不存在，将在首次DNS记录时创建: %s", path)
         // ensure parent dir exists
-        _ = os.MkdirAll(filepath.Dir(path), 0o755)
+        if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+            log.Printf("[dns-pool] 创建目录失败: %v (dir=%s)", err, filepath.Dir(path))
+        }
         // create empty file lazily on first persist
+    } else {
+        // 文件加载成功，显示记录数
+        pool.mu.RLock()
+        recordCount := len(pool.records)
+        pool.mu.RUnlock()
+        log.Printf("[dns-pool] 从文件加载成功: %d 个域名记录", recordCount)
     }
     log.Printf("[dns-pool] using file: %s", path)
     // 启动热加载后台任务（轻量轮询，避免引入外部依赖）
@@ -570,18 +581,24 @@ func (p *DNSPool) GetIPs(ctx context.Context, domain string) (ipv4 []string, ipv
 // 根据设备能力过滤：仅IPv4设备不返回IPv6地址，仅IPv6设备不返回IPv4地址
 func (p *DNSPool) GetAllDomainsAndIPs() map[string][]string {
 	if p == nil {
+		log.Printf("[dns-pool] GetAllDomainsAndIPs: DNS池未初始化")
 		return nil
 	}
 	allowV4 := HasIPv4()
 	allowV6 := HasIPv6()
 	
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	recordCount := len(p.records)
+	log.Printf("[dns-pool] GetAllDomainsAndIPs: 内存中有 %d 个域名记录 (allowV4=%v, allowV6=%v)", recordCount, allowV4, allowV6)
 	result := make(map[string][]string)
+	totalIPsBeforeFilter := 0
+	totalIPsAfterFilter := 0
 	for domain, rec := range p.records {
 		if rec == nil {
+			log.Printf("[dns-pool] GetAllDomainsAndIPs: 域名 %s 的记录为nil", domain)
 			continue
 		}
+		totalIPsBeforeFilter += len(rec.IPv4) + len(rec.IPv6)
 		ips := make([]string, 0)
 		
 		// 根据设备能力收集IP：仅支持IPv4时只收集IPv4，仅支持IPv6时只收集IPv6
@@ -632,8 +649,17 @@ func (p *DNSPool) GetAllDomainsAndIPs() map[string][]string {
 		}
 		if len(ips) > 0 {
 			result[domain] = ips
+			totalIPsAfterFilter += len(ips)
+			log.Printf("[dns-pool] GetAllDomainsAndIPs: 域名 %s: IPv4=%d, IPv6=%d, 过滤后可用=%d", 
+				domain, len(rec.IPv4), len(rec.IPv6), len(ips))
+		} else {
+			log.Printf("[dns-pool] GetAllDomainsAndIPs: 域名 %s 过滤后无可用IP (IPv4=%d, IPv6=%d, 黑名单=%d)", 
+				domain, len(rec.IPv4), len(rec.IPv6), len(rec.Blacklist))
 		}
 	}
+	p.mu.RUnlock()
+	log.Printf("[dns-pool] GetAllDomainsAndIPs: 总计 %d 个域名，过滤前 %d 个IP，过滤后 %d 个可用IP", 
+		recordCount, totalIPsBeforeFilter, totalIPsAfterFilter)
 	return result
 }
 
