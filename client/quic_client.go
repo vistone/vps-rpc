@@ -54,17 +54,25 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
 			// 但这样会慢一些，建议用户直接使用IP地址
 			ipAddress = address
 		} else {
-			// 优先使用IPv4，其次IPv6
-			var selectedIP net.IP
-			for _, ip := range ips {
-				if ip.IP.To4() != nil {
-					selectedIP = ip.IP
-					break
-				}
-			}
-			if selectedIP == nil && len(ips) > 0 {
-				selectedIP = ips[0].IP
-			}
+            // 优先使用IPv6，其次IPv4（确保支持IPv6的节点走v6）
+            var selectedIP net.IP
+            for _, ipa := range ips {
+                if ipa.IP != nil && ipa.IP.To4() == nil { // IPv6
+                    selectedIP = ipa.IP
+                    break
+                }
+            }
+            if selectedIP == nil { // 回落选择第一个IPv4或任意IP
+                for _, ipa := range ips {
+                    if ipa.IP != nil && ipa.IP.To4() != nil {
+                        selectedIP = ipa.IP
+                        break
+                    }
+                }
+            }
+            if selectedIP == nil && len(ips) > 0 {
+                selectedIP = ips[0].IP
+            }
 			ipAddress = net.JoinHostPort(selectedIP.String(), port)
 		}
 	}
