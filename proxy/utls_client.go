@@ -162,43 +162,40 @@ func PrewarmConnections(ctx context.Context) {
 
 					// 忽略HEAD请求可能返回数据的协议错误（某些服务器不规范实现）
 					// HTTP/2规范要求HEAD请求不应有数据，但某些服务器会返回数据
-					// 这个错误不影响连接建立，可以安全忽略
+					// 关键修复：在关闭响应体之前，先读取并丢弃所有数据
+					// 这样可以避免HTTP/2库内部报告"protocol error: received DATA on a HEAD request"
 					if resp != nil {
-						_ = resp.Body.Close() // 关闭响应体（即使有错误也忽略）
+						// 读取并丢弃响应体数据（避免HTTP/2库报协议错误）
+						_, _ = io.Copy(io.Discard, resp.Body)
+						_ = resp.Body.Close() // 关闭响应体
 					}
 
-					// 检查是否成功（忽略协议错误，只要连接建立即可）
-					if err == nil || (err != nil && !isProtocolError(err)) {
-						if resp != nil {
-							// 连接建立成功，缓存到全局预建池
-							globalPrewarmMu.Lock()
-							globalPrewarmedH2Clients[key] = h2c
-							globalPrewarmMu.Unlock()
-							countMu.Lock()
-							successCount++
-							countMu.Unlock()
+					// 判断是否为协议错误（HEAD请求返回数据）
+					isProtoErr := isProtocolError(err)
+					
+					// 检查是否成功：只要连接建立（有响应）即可，忽略协议错误
+					if resp != nil {
+						// 连接建立成功，缓存到全局预建池
+						globalPrewarmMu.Lock()
+						globalPrewarmedH2Clients[key] = h2c
+						globalPrewarmMu.Unlock()
+						countMu.Lock()
+						successCount++
+						countMu.Unlock()
+						// 如果是协议错误，不记录成功日志（减少日志噪音）
+						if !isProtoErr {
 							log.Printf("[prewarm] ✓ %s -> %s", d, a)
-						} else {
-							// 连接失败，但不影响后续使用（后续请求时会重新建立）
-							countMu.Lock()
-							failCount++
-							countMu.Unlock()
 						}
+					} else if err != nil && !isProtoErr {
+						// 真正的连接失败，记录失败
+						countMu.Lock()
+						failCount++
+						countMu.Unlock()
 					} else {
-						// 协议错误（如HEAD请求返回数据），但连接已建立，视为成功
-						if resp != nil {
-							globalPrewarmMu.Lock()
-							globalPrewarmedH2Clients[key] = h2c
-							globalPrewarmMu.Unlock()
-							countMu.Lock()
-							successCount++
-							countMu.Unlock()
-							log.Printf("[prewarm] ✓ %s -> %s", d, a)
-						} else {
-							countMu.Lock()
-							failCount++
-							countMu.Unlock()
-						}
+						// 协议错误但没有响应，可能是其他问题
+						countMu.Lock()
+						failCount++
+						countMu.Unlock()
 					}
 				}(domain, addr)
 			}
@@ -211,14 +208,17 @@ func PrewarmConnections(ctx context.Context) {
 
 // isProtocolError 检查错误是否是协议错误（如HEAD请求返回数据）
 // 这类错误不影响连接建立，可以安全忽略
+// HTTP/2库会在内部记录这些错误，但我们可以识别并忽略它们
 func isProtocolError(err error) bool {
 	if err == nil {
 		return false
 	}
 	errStr := err.Error()
-	return errStr == "protocol error: received DATA on a HEAD request" ||
-		errStr == "http2: received DATA on a HEAD request" ||
-		strings.Contains(errStr, "received DATA on a HEAD request")
+	// 匹配各种可能的协议错误格式
+	return strings.Contains(errStr, "protocol error") &&
+		strings.Contains(errStr, "received DATA on a HEAD request") ||
+		strings.Contains(errStr, "http2: received DATA on a HEAD request") ||
+		errStr == "protocol error: received DATA on a HEAD request"
 }
 
 // PrewarmSingleConnection 为单个IP预建连接（当发现新IP时调用）
@@ -266,26 +266,27 @@ func PrewarmSingleConnection(ctx context.Context, domain, address string) {
 
 	// 忽略HEAD请求可能返回数据的协议错误（某些服务器不规范实现）
 	// HTTP/2规范要求HEAD请求不应有数据，但某些服务器会返回数据
-	// 这个错误不影响连接建立，可以安全忽略
+	// 关键修复：在关闭响应体之前，先读取并丢弃所有数据
+	// 这样可以避免HTTP/2库内部报告"protocol error: received DATA on a HEAD request"
 	if resp != nil {
-		_ = resp.Body.Close() // 关闭响应体（即使有错误也忽略）
+		// 读取并丢弃响应体数据（避免HTTP/2库报协议错误）
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close() // 关闭响应体
 	}
 
-	// 检查是否成功（忽略协议错误，只要连接建立即可）
-	if err == nil || (err != nil && !isProtocolError(err)) {
-		if resp != nil {
-			// 连接建立成功，加入全局预建池
-			globalPrewarmMu.Lock()
-			globalPrewarmedH2Clients[key] = h2c
-			globalPrewarmMu.Unlock()
-			log.Printf("[prewarm] ✓ 新IP预热成功: %s -> %s", domain, address)
-		}
-	} else if isProtocolError(err) && resp != nil {
-		// 协议错误（如HEAD请求返回数据），但连接已建立，视为成功
+	// 判断是否为协议错误（HEAD请求返回数据）
+	isProtoErr := isProtocolError(err)
+	
+	// 检查是否成功：只要连接建立（有响应）即可，忽略协议错误
+	if resp != nil {
+		// 连接建立成功，加入全局预建池
 		globalPrewarmMu.Lock()
 		globalPrewarmedH2Clients[key] = h2c
 		globalPrewarmMu.Unlock()
-		log.Printf("[prewarm] ✓ 新IP预热成功: %s -> %s", domain, address)
+		// 如果是协议错误，不记录成功日志（减少日志噪音）
+		if !isProtoErr {
+			log.Printf("[prewarm] ✓ 新IP预热成功: %s -> %s", domain, address)
+		}
 	}
 }
 
