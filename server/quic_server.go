@@ -157,8 +157,12 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 	ctx := context.Background()
 	var respData []byte
 
-    // 若消息体为空且开启了PeerService，直接作为GetPeers处理
-    if msgLen == 0 && s.peerServer != nil {
+    // 注意：空消息（msgLen == 0）可能是空的 ExchangeDNSRequest 或 GetPeersRequest
+    // 不能仅根据长度判断，需要通过其他方式区分（比如根据调用上下文）
+    // 暂时移除这个特殊处理，让后续的识别逻辑来处理
+    // 如果后续识别失败，再返回空响应
+    if false && msgLen == 0 && s.peerServer != nil {
+        // 已禁用：空消息可能是 ExchangeDNSRequest，不能直接识别为 GetPeersRequest
         var getPeersReq rpc.GetPeersRequest
         resp, err := s.peerServer.GetPeers(ctx, &getPeersReq)
         if err != nil {
@@ -231,12 +235,16 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 			log.Printf("[quic-rpc] ReportNode: %s", reportNodeReq.Address)
 		} else {
 			// 然后尝试解析为 ExchangeDNSRequest（有 records 字段，即使是空的）
-			// 关键：ExchangeDNSRequest 有字段编号1（records map），即使为空也可能有wire format
+			// 关键问题：空的 ExchangeDNSRequest 序列化后也是空字节（len=0），
+			// 无法与 GetPeersRequest 区分。但我们可以通过以下方式：
+			// 1. 如果 msgLen == 0，优先认为是 ExchangeDNSRequest（因为客户端明确调用了 ExchangeDNS）
+			// 2. GetPeers 请求由客户端单独的方法调用，不会混淆
 			var exchangeDNSReq rpc.ExchangeDNSRequest
 			unmarshalErr := proto.Unmarshal(msgData, &exchangeDNSReq)
 			if unmarshalErr == nil {
 				// ExchangeDNSRequest：总是接受（即使 records 为空也是有效的 ExchangeDNS 请求）
-				log.Printf("[quic-rpc] 识别为 ExchangeDNSRequest (records=%d)", len(exchangeDNSReq.Records))
+				// 即使 msgLen == 0，proto.Unmarshal 也能成功解析空的 ExchangeDNSRequest
+				log.Printf("[quic-rpc] 识别为 ExchangeDNSRequest (records=%d, msgLen=%d)", len(exchangeDNSReq.Records), msgLen)
 				// 学到对端地址
 				if conn != nil {
 					if ps, ok := s.peerServer.(*PeerServiceServer); ok {
@@ -258,13 +266,14 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 				}
 				log.Printf("[quic-rpc] ExchangeDNS: 本地=%d, 远程=%d", len(exchangeDNSReq.Records), len(resp.Records))
 			} else {
-				log.Printf("[quic-rpc] ExchangeDNSRequest 解析失败: %v", unmarshalErr)
+				log.Printf("[quic-rpc] ExchangeDNSRequest 解析失败: %v (msgLen=%d)", unmarshalErr, msgLen)
 				// GetPeersRequest: 空消息（完全没有字段）
 				// 只有在其他类型都解析失败时，才尝试 GetPeersRequest
+				// 注意：如果 msgLen == 0，GetPeersRequest 也能解析成功，但这是最后的选择
 				var getPeersReq rpc.GetPeersRequest
 				unmarshalErr2 := proto.Unmarshal(msgData, &getPeersReq)
 				if unmarshalErr2 == nil {
-					log.Printf("[quic-rpc] 识别为 GetPeersRequest")
+					log.Printf("[quic-rpc] 识别为 GetPeersRequest (msgLen=%d)", msgLen)
                 // 学到对端地址
                 if conn != nil {
                     if ps, ok := s.peerServer.(*PeerServiceServer); ok {
