@@ -233,8 +233,10 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 			// 然后尝试解析为 ExchangeDNSRequest（有 records 字段，即使是空的）
 			// 关键：ExchangeDNSRequest 有字段编号1（records map），即使为空也可能有wire format
 			var exchangeDNSReq rpc.ExchangeDNSRequest
-			if err := proto.Unmarshal(msgData, &exchangeDNSReq); err == nil {
+			unmarshalErr := proto.Unmarshal(msgData, &exchangeDNSReq)
+			if unmarshalErr == nil {
 				// ExchangeDNSRequest：总是接受（即使 records 为空也是有效的 ExchangeDNS 请求）
+				log.Printf("[quic-rpc] 识别为 ExchangeDNSRequest (records=%d)", len(exchangeDNSReq.Records))
 				// 学到对端地址
 				if conn != nil {
 					if ps, ok := s.peerServer.(*PeerServiceServer); ok {
@@ -256,10 +258,13 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 				}
 				log.Printf("[quic-rpc] ExchangeDNS: 本地=%d, 远程=%d", len(exchangeDNSReq.Records), len(resp.Records))
 			} else {
+				log.Printf("[quic-rpc] ExchangeDNSRequest 解析失败: %v", unmarshalErr)
 				// GetPeersRequest: 空消息（完全没有字段）
 				// 只有在其他类型都解析失败时，才尝试 GetPeersRequest
 				var getPeersReq rpc.GetPeersRequest
-				if err := proto.Unmarshal(msgData, &getPeersReq); err == nil {
+				unmarshalErr2 := proto.Unmarshal(msgData, &getPeersReq)
+				if unmarshalErr2 == nil {
+					log.Printf("[quic-rpc] 识别为 GetPeersRequest")
                 // 学到对端地址
                 if conn != nil {
                     if ps, ok := s.peerServer.(*PeerServiceServer); ok {
@@ -281,7 +286,7 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 				}
 				log.Printf("[quic-rpc] GetPeers: %d个节点", len(resp.Peers))
 				} else {
-					log.Printf("无法识别的请求类型（msgLen=%d，已尝试所有PeerService类型）", msgLen)
+					log.Printf("无法识别的请求类型（msgLen=%d，ExchangeDNS解析失败: %v, GetPeers解析失败: %v）", msgLen, unmarshalErr, unmarshalErr2)
 					// 对于无法识别的请求，返回一个空的 ExchangeDNSResponse，而不是不发送响应
 					// 这样可以避免客户端反序列化失败
 					emptyResp := &rpc.ExchangeDNSResponse{Records: make(map[string]*rpc.DNSRecord)}
