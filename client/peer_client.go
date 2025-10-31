@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
     "net"
+    "strings"
 	"sync"
 	"time"
 
@@ -315,11 +316,15 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
 	defer cancel()
 
     // 获取已知peers列表
-	peers, err := client.GetPeers(ctx)
-	if err != nil {
-		log.Printf("[peer-sync] 获取peers失败 %s: %v", peerAddr, err)
-		return
-	}
+    peers, err := client.GetPeers(ctx)
+    if err != nil {
+        if isTimeoutErr(err) {
+            log.Printf("[debug][peer-sync] 获取peers超时 %s: %v", peerAddr, err)
+        } else {
+            log.Printf("[peer-sync] 获取peers失败 %s: %v", peerAddr, err)
+        }
+        return
+    }
     // 自动打印本次从该节点获取到的peers结果
     log.Printf("[peer-sync] 来自 %s 的已知节点: %v", peerAddr, peers)
 
@@ -372,7 +377,11 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
             defer cancel3()
             resp, err := client.ExchangeDNS(ctx3, &rpc.ExchangeDNSRequest{Records: local})
             if err != nil {
-                log.Printf("[peer-sync] ExchangeDNS失败 %s: %v", peerAddr, err)
+                if isTimeoutErr(err) {
+                    log.Printf("[debug][peer-sync] ExchangeDNS超时 %s: %v", peerAddr, err)
+                } else {
+                    log.Printf("[peer-sync] ExchangeDNS失败 %s: %v", peerAddr, err)
+                }
             } else if len(resp.Records) > 0 {
                 if err := pool.MergeFromPeer(resp.Records); err != nil {
                     log.Printf("[peer-sync] 合并对端DNS记录失败 %s: %v", peerAddr, err)
@@ -384,5 +393,14 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
     }
 
     log.Printf("[peer-sync] 与 %s 同步完成，本次返回=%d，当前已知节点总数=%d", peerAddr, len(peers), total)
+}
+
+// isTimeoutErr 判断是否为空闲/超时类错误
+func isTimeoutErr(err error) bool {
+    if err == nil { return false }
+    s := err.Error()
+    return strings.Contains(s, "timeout: no recent network activity") ||
+        strings.Contains(s, "i/o timeout") ||
+        strings.Contains(s, "deadline exceeded")
 }
 
