@@ -160,15 +160,19 @@ func (p *DNSPool) persistNow() {
     recordCount := len(p.records)
     if recordCount == 0 {
         p.mu.RUnlock()
-        // 空记录不写入，避免覆盖已有数据
+        log.Printf("[dns-pool] persistNow: 跳过写入（记录数为0，避免覆盖已有数据）")
         return
     }
+    log.Printf("[dns-pool] persistNow: 开始写入 %d 个域名到 %s", recordCount, p.filename)
     // 创建完整副本用于持久化（包含IPv4和IPv6）
     persistRecords := make(map[string]*dnsRecord, recordCount)
+    validCount := 0
     for domain, rec := range p.records {
         if rec == nil {
+            log.Printf("[dns-pool] persistNow: 警告：域名 %s 的记录为nil，跳过", domain)
             continue
         }
+        validCount++
         // 创建完整副本，保留所有数据（IPv4和IPv6）
         persistRec := &dnsRecord{
             Domain:       rec.Domain,
@@ -199,25 +203,40 @@ func (p *DNSPool) persistNow() {
     }
     p.mu.RUnlock()
     
+    if validCount == 0 {
+        log.Printf("[dns-pool] persistNow: 警告：没有有效记录可写入")
+        return
+    }
+    
     data, err := json.MarshalIndent(persistRecords, "", "  ")
     if err != nil { 
-        log.Printf("[dns-pool] marshal failed: %v", err)
+        log.Printf("[dns-pool] persistNow: JSON序列化失败: %v", err)
         return
     }
+    log.Printf("[dns-pool] persistNow: JSON序列化完成，数据大小=%d字节", len(data))
     
     dir := filepath.Dir(p.filename)
+    if dir == "" || dir == "." {
+        dir = "." // 当前目录
+    }
+    log.Printf("[dns-pool] persistNow: 检查目录 %s", dir)
     if err := os.MkdirAll(dir, 0o755); err != nil { 
-        log.Printf("[dns-pool] mkdir failed: %v (dir=%s)", err, dir)
+        log.Printf("[dns-pool] persistNow: 创建目录失败: %v (dir=%s)", err, dir)
         return
     }
+    log.Printf("[dns-pool] persistNow: 目录检查/创建成功: %s", dir)
     
     tmp := p.filename + ".tmp"
+    log.Printf("[dns-pool] persistNow: 写入临时文件 %s", tmp)
     if err := os.WriteFile(tmp, data, 0o644); err != nil { 
-        log.Printf("[dns-pool] write tmp failed: %v (file=%s, size=%d bytes)", err, tmp, len(data))
+        log.Printf("[dns-pool] persistNow: 写入临时文件失败: %v (file=%s, size=%d bytes)", err, tmp, len(data))
         return
     }
+    log.Printf("[dns-pool] persistNow: 临时文件写入成功，开始原子替换")
     if err := os.Rename(tmp, p.filename); err != nil { 
-        log.Printf("[dns-pool] rename failed: %v (tmp=%s -> file=%s)", err, tmp, p.filename)
+        log.Printf("[dns-pool] persistNow: 原子替换失败: %v (tmp=%s -> file=%s)", err, tmp, p.filename)
+        // 尝试清理临时文件
+        _ = os.Remove(tmp)
         return
     }
     
@@ -225,9 +244,12 @@ func (p *DNSPool) persistNow() {
     p.lastPersist = time.Now()
     if fi, err := os.Stat(p.filename); err == nil { 
         p.fileModTime = fi.ModTime()
+        log.Printf("[dns-pool] persistNow: 文件写入成功，修改时间=%v，大小=%d字节", fi.ModTime(), fi.Size())
+    } else {
+        log.Printf("[dns-pool] persistNow: 警告：无法读取文件状态: %v", err)
     }
     p.persistMu.Unlock()
-    log.Printf("[dns-pool] persisted %d domains to %s (%d bytes)", recordCount, p.filename, len(data))
+    log.Printf("[dns-pool] persisted %d domains to %s (%d bytes)", validCount, p.filename, len(data))
 }
 
 // 背景热加载：定期检查文件是否被外部修改（如手工或工具写入），若变更则加载
