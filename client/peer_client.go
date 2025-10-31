@@ -351,17 +351,19 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
             }
             local[domain] = &rpc.DNSRecord{Ipv4: v4, Ipv6: v6}
         }
-        // 发送ExchangeDNS
-        ctx3, cancel3 := context.WithTimeout(context.Background(), 10*time.Second)
-        defer cancel3()
-        resp, err := client.ExchangeDNS(ctx3, &rpc.ExchangeDNSRequest{Records: local})
-        if err != nil {
-            log.Printf("[peer-sync] ExchangeDNS失败 %s: %v", peerAddr, err)
-        } else if len(resp.Records) > 0 {
-            if err := pool.MergeFromPeer(resp.Records); err != nil {
-                log.Printf("[peer-sync] 合并对端DNS记录失败 %s: %v", peerAddr, err)
-            } else {
-                log.Printf("[peer-sync] 已合并来自 %s 的 %d 个域的DNS记录", peerAddr, len(resp.Records))
+        if len(local) > 0 { // 仅当有白名单数据时才交换，避免发送空消息
+            // 发送ExchangeDNS
+            ctx3, cancel3 := context.WithTimeout(context.Background(), 10*time.Second)
+            defer cancel3()
+            resp, err := client.ExchangeDNS(ctx3, &rpc.ExchangeDNSRequest{Records: local})
+            if err != nil {
+                log.Printf("[peer-sync] ExchangeDNS失败 %s: %v", peerAddr, err)
+            } else if len(resp.Records) > 0 {
+                if err := pool.MergeFromPeer(resp.Records); err != nil {
+                    log.Printf("[peer-sync] 合并对端DNS记录失败 %s: %v", peerAddr, err)
+                } else {
+                    log.Printf("[peer-sync] 已合并来自 %s 的 %d 个域的DNS记录", peerAddr, len(resp.Records))
+                }
             }
         }
     }

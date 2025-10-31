@@ -130,18 +130,33 @@ func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
 		return
 	}
 
-	// 读取protobuf消息
-	msgData := make([]byte, msgLen)
-	if _, err := io.ReadFull(stream, msgData); err != nil {
+    // 读取protobuf消息
+    msgData := make([]byte, msgLen)
+    if _, err := io.ReadFull(stream, msgData); err != nil {
 		log.Printf("读取消息数据失败: %v", err)
 		return
 	}
 
-	// 解析并路由到对应服务
+    // 解析并路由到对应服务
 	ctx := context.Background()
 	var respData []byte
 
-	// 尝试解析为FetchRequest（CrawlerService）
+    // 若消息体为空且开启了PeerService，直接作为GetPeers处理
+    if msgLen == 0 && s.peerServer != nil {
+        var getPeersReq rpc.GetPeersRequest
+        resp, err := s.peerServer.GetPeers(ctx, &getPeersReq)
+        if err != nil {
+            log.Printf("GetPeers失败: %v", err)
+            return
+        }
+        respData, err = proto.Marshal(resp)
+        if err != nil {
+            log.Printf("序列化响应失败: %v", err)
+            return
+        }
+        log.Printf("[quic-rpc] GetPeers: %d个节点", len(resp.Peers))
+    } else {
+    // 尝试解析为FetchRequest（CrawlerService）
 	var fetchReq rpc.FetchRequest
 	if err := proto.Unmarshal(msgData, &fetchReq); err == nil && fetchReq.Url != "" {
 		// 确认是FetchRequest，调用CrawlerService
@@ -161,11 +176,11 @@ func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
 			return
 		}
 		log.Printf("[quic-rpc] URL=%s, 服务处理=%v, 总计=%v", fetchReq.Url, quicRpcLatency, quicRpcLatency)
-	} else if s.peerServer != nil {
+    } else if s.peerServer != nil {
 		// 尝试解析为PeerService相关请求
 		// ExchangeDNSRequest: 有records字段
 		var exchangeDNSReq rpc.ExchangeDNSRequest
-		if err := proto.Unmarshal(msgData, &exchangeDNSReq); err == nil && len(exchangeDNSReq.Records) > 0 {
+        if err := proto.Unmarshal(msgData, &exchangeDNSReq); err == nil {
 			resp, err := s.peerServer.ExchangeDNS(ctx, &exchangeDNSReq)
 			if err != nil {
 				log.Printf("ExchangeDNS失败: %v", err)
@@ -176,7 +191,7 @@ func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
 				log.Printf("序列化响应失败: %v", err)
 				return
 			}
-			log.Printf("[quic-rpc] ExchangeDNS: 本地=%d, 远程=%d", len(exchangeDNSReq.Records), len(resp.Records))
+            log.Printf("[quic-rpc] ExchangeDNS: 本地=%d, 远程=%d", len(exchangeDNSReq.Records), len(resp.Records))
 		} else {
 			// GetPeersRequest: 空消息
 			var getPeersReq rpc.GetPeersRequest
@@ -217,6 +232,7 @@ func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
 		log.Printf("未知请求类型且PeerServer未初始化")
 		return
 	}
+    }
 
 	// 发送响应：长度 + 数据
 	respLen := uint32(len(respData))
