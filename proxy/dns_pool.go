@@ -1,17 +1,19 @@
 package proxy
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"log"
-	"net"
-	"time"
+    "context"
+    "encoding/json"
+    "errors"
+    "fmt"
+    "log"
+    "net"
+    "os"
+    "path/filepath"
+    "sync"
+    "time"
 
-	"vps-rpc/config"
+    "vps-rpc/config"
     "vps-rpc/rpc"
-
-	bolt "go.etcd.io/bbolt"
 )
 
 // dnsRecord 存储单个域名的解析结果
@@ -34,30 +36,69 @@ type dnsRecord struct {
 }
 
 type DNSPool struct {
-	db *bolt.DB
+    mu       sync.RWMutex
+    records  map[string]*dnsRecord
+    filename string
 }
 
-func NewDNSPool(dbPath string) (*DNSPool, error) {
-	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
-	if err != nil {
-		return nil, err
-	}
-	err = db.Update(func(tx *bolt.Tx) error {
-		_, e := tx.CreateBucketIfNotExists([]byte("dns_records"))
-		return e
-	})
-	if err != nil {
-		db.Close()
-		return nil, err
-	}
-	return &DNSPool{db: db}, nil
+func NewDNSPool(path string) (*DNSPool, error) {
+    // Treat provided path as JSON file path. If directory, use dns_pool.json inside it.
+    fi, err := os.Stat(path)
+    if err == nil && fi.IsDir() {
+        path = filepath.Join(path, "dns_pool.json")
+    }
+    pool := &DNSPool{
+        records:  make(map[string]*dnsRecord),
+        filename: path,
+    }
+    if err := pool.loadFromDisk(); err != nil {
+        if !errors.Is(err, os.ErrNotExist) {
+            return nil, err
+        }
+        // ensure parent dir exists
+        _ = os.MkdirAll(filepath.Dir(path), 0o755)
+        // create empty file lazily on first persist
+    }
+    return pool, nil
 }
 
-func (p *DNSPool) Close() error {
-	if p == nil || p.db == nil {
-		return nil
-	}
-	return p.db.Close()
+func (p *DNSPool) Close() error { return nil }
+
+func (p *DNSPool) loadFromDisk() error {
+    data, err := os.ReadFile(p.filename)
+    if err != nil {
+        return err
+    }
+    var m map[string]*dnsRecord
+    if err := json.Unmarshal(data, &m); err != nil {
+        return err
+    }
+    p.mu.Lock()
+    p.records = m
+    // backfill maps inside records
+    for _, rec := range p.records {
+        if rec.Blacklist == nil { rec.Blacklist = map[string]bool{} }
+        if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
+    }
+    p.mu.Unlock()
+    return nil
+}
+
+func (p *DNSPool) persist() error {
+    p.mu.RLock()
+    data, err := json.MarshalIndent(p.records, "", "  ")
+    p.mu.RUnlock()
+    if err != nil {
+        return err
+    }
+    if err := os.MkdirAll(filepath.Dir(p.filename), 0o755); err != nil {
+        return err
+    }
+    tmp := p.filename + ".tmp"
+    if err := os.WriteFile(tmp, data, 0o644); err != nil {
+        return err
+    }
+    return os.Rename(tmp, p.filename)
 }
 
 // resolveAndStore 解析域名A/AAAA并存储
@@ -177,79 +218,64 @@ func (p *DNSPool) resolveAndStoreQuick(ctx context.Context, domain string) (*dns
 }
 
 func (p *DNSPool) save(rec *dnsRecord) error {
-	return p.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("dns_records"))
-		data, _ := json.Marshal(rec)
-		return b.Put([]byte(rec.Domain), data)
-	})
+    p.mu.Lock()
+    // keep existing lists if present, only update fields from rec
+    existing, ok := p.records[rec.Domain]
+    if !ok {
+        existing = &dnsRecord{Domain: rec.Domain}
+        p.records[rec.Domain] = existing
+    }
+    existing.IPv4 = append([]string(nil), rec.IPv4...)
+    existing.IPv6 = append([]string(nil), rec.IPv6...)
+    if existing.Blacklist == nil { existing.Blacklist = map[string]bool{} }
+    if existing.Whitelist == nil { existing.Whitelist = map[string]bool{} }
+    existing.UpdatedAt = rec.UpdatedAt
+    p.mu.Unlock()
+    return p.persist()
 }
 
 // MergeFromPeer 将对等节点返回的DNS记录合并入本地数据库（仅合并IPv4/IPv6，忽略黑白名单）
 func (p *DNSPool) MergeFromPeer(records map[string]*rpc.DNSRecord) error {
-    if p == nil || p.db == nil || len(records) == 0 {
-        return nil
+    if p == nil || len(records) == 0 { return nil }
+    p.mu.Lock()
+    for domain, r := range records {
+        if r == nil { continue }
+        rec, ok := p.records[domain]
+        if !ok {
+            rec = &dnsRecord{Domain: domain}
+            p.records[domain] = rec
+        }
+        uniq4 := map[string]struct{}{}
+        uniq6 := map[string]struct{}{}
+        for _, ip := range rec.IPv4 { uniq4[ip] = struct{}{} }
+        for _, ip := range rec.IPv6 { uniq6[ip] = struct{}{} }
+        for _, ip := range r.Ipv4 { uniq4[ip] = struct{}{} }
+        for _, ip := range r.Ipv6 { uniq6[ip] = struct{}{} }
+        rec.IPv4 = rec.IPv4[:0]
+        rec.IPv6 = rec.IPv6[:0]
+        for ip := range uniq4 { rec.IPv4 = append(rec.IPv4, ip) }
+        for ip := range uniq6 { rec.IPv6 = append(rec.IPv6, ip) }
+        if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
+        for _, ip := range r.Ipv4 { rec.Whitelist[ip] = true }
+        for _, ip := range r.Ipv6 { rec.Whitelist[ip] = true }
+        rec.UpdatedAt = time.Now().Unix()
     }
-    return p.db.Update(func(tx *bolt.Tx) error {
-        b := tx.Bucket([]byte("dns_records"))
-        if b == nil {
-            return nil
-        }
-        for domain, r := range records {
-            if r == nil { continue }
-            // 读取现有记录
-            var rec dnsRecord
-            if v := b.Get([]byte(domain)); v != nil {
-                _ = json.Unmarshal(v, &rec)
-            }
-            if rec.Domain == "" { rec.Domain = domain }
-            // 建立去重集合
-            uniq4 := map[string]struct{}{}
-            uniq6 := map[string]struct{}{}
-            for _, ip := range rec.IPv4 { uniq4[ip] = struct{}{} }
-            for _, ip := range rec.IPv6 { uniq6[ip] = struct{}{} }
-            // 合并来自peer的IP
-            for _, ip := range r.Ipv4 { uniq4[ip] = struct{}{} }
-            for _, ip := range r.Ipv6 { uniq6[ip] = struct{}{} }
-            // 回写数组（只新增，不删除）
-            rec.IPv4 = rec.IPv4[:0]
-            rec.IPv6 = rec.IPv6[:0]
-            for ip := range uniq4 { rec.IPv4 = append(rec.IPv4, ip) }
-            for ip := range uniq6 { rec.IPv6 = append(rec.IPv6, ip) }
-            // 将来自对端的IP记为白名单（不同节点黑名单可能不同，不能同步黑名单）
-            if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
-            for _, ip := range r.Ipv4 { rec.Whitelist[ip] = true }
-            for _, ip := range r.Ipv6 { rec.Whitelist[ip] = true }
-            // 更新时间
-            rec.UpdatedAt = time.Now().Unix()
-            data, _ := json.Marshal(&rec)
-            if err := b.Put([]byte(domain), data); err != nil { return err }
-        }
-        return nil
-    })
+    p.mu.Unlock()
+    return p.persist()
 }
 
 func (p *DNSPool) get(domain string) (*dnsRecord, error) {
-	var out *dnsRecord
-	err := p.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("dns_records"))
-		v := b.Get([]byte(domain))
-		if v == nil {
-			return nil
-		}
-		var rec dnsRecord
-		if e := json.Unmarshal(v, &rec); e != nil {
-			return e
-		}
-		if rec.Blacklist == nil {
-			rec.Blacklist = map[string]bool{}
-		}
-		if rec.Whitelist == nil {
-			rec.Whitelist = map[string]bool{}
-		}
-		out = &rec
-		return nil
-	})
-	return out, err
+    p.mu.RLock()
+    rec := p.records[domain]
+    p.mu.RUnlock()
+    if rec == nil {
+        return nil, nil
+    }
+    // return a shallow copy to avoid external mutation
+    c := *rec
+    if c.Blacklist == nil { c.Blacklist = map[string]bool{} }
+    if c.Whitelist == nil { c.Whitelist = map[string]bool{} }
+    return &c, nil
 }
 
 // GetIPs 返回可用的IPv4/IPv6列表（必要时刷新）
@@ -357,72 +383,44 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
 
 // ReportResult 根据返回码更新黑名单。
 func (p *DNSPool) ReportResult(domain, ip string, status int) error {
-	if p == nil || ip == "" || domain == "" {
-		return nil
-	}
-	return p.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("dns_records"))
-		v := b.Get([]byte(domain))
-		var rec dnsRecord
-		if v != nil {
-			_ = json.Unmarshal(v, &rec)
-		}
-		if rec.Domain == "" {
-			rec.Domain = domain
-		}
-		if rec.Blacklist == nil {
-			rec.Blacklist = map[string]bool{}
-		}
-		if rec.Whitelist == nil {
-			rec.Whitelist = map[string]bool{}
-		}
-		// 仅 403 拉黑；200 解封并加入白名单；其他状态码不变
-		if status == 403 {
-			rec.Blacklist[ip] = true
-			delete(rec.Whitelist, ip)
-		} else if status == 200 {
-			delete(rec.Blacklist, ip)
-			rec.Whitelist[ip] = true
-		}
-		data, _ := json.Marshal(&rec)
-		return b.Put([]byte(domain), data)
-	})
+    if p == nil || ip == "" || domain == "" { return nil }
+    p.mu.Lock()
+    rec, ok := p.records[domain]
+    if !ok {
+        rec = &dnsRecord{Domain: domain, Blacklist: map[string]bool{}, Whitelist: map[string]bool{}}
+        p.records[domain] = rec
+    }
+    if rec.Blacklist == nil { rec.Blacklist = map[string]bool{} }
+    if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
+    if status == 403 {
+        rec.Blacklist[ip] = true
+        delete(rec.Whitelist, ip)
+    } else if status == 200 {
+        delete(rec.Blacklist, ip)
+        rec.Whitelist[ip] = true
+    }
+    p.mu.Unlock()
+    return p.persist()
 }
 
 // ReportLatency 上报请求耗时（毫秒），用于更新 EWMA
 func (p *DNSPool) ReportLatency(domain, ip string, ms int64) error {
-	if p == nil || ip == "" || domain == "" || ms <= 0 {
-		return nil
-	}
-	const alpha = 0.3 // EWMA 平滑系数
-	return p.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("dns_records"))
-		v := b.Get([]byte(domain))
-		var rec dnsRecord
-		if v != nil {
-			_ = json.Unmarshal(v, &rec)
-		}
-		if rec.Domain == "" {
-			rec.Domain = domain
-		}
-		// 判定族
-		val := float64(ms)
-		if net.ParseIP(ip) != nil && net.ParseIP(ip).To4() == nil {
-			if rec.EwmaLatency6 == 0 {
-				rec.EwmaLatency6 = val
-			} else {
-				rec.EwmaLatency6 = alpha*val + (1-alpha)*rec.EwmaLatency6
-			}
-		} else {
-			if rec.EwmaLatency4 == 0 {
-				rec.EwmaLatency4 = val
-			} else {
-				rec.EwmaLatency4 = alpha*val + (1-alpha)*rec.EwmaLatency4
-			}
-		}
-		data, _ := json.Marshal(&rec)
-		return b.Put([]byte(domain), data)
-	})
+    if p == nil || ip == "" || domain == "" || ms <= 0 { return nil }
+    const alpha = 0.3
+    p.mu.Lock()
+    rec, ok := p.records[domain]
+    if !ok {
+        rec = &dnsRecord{Domain: domain}
+        p.records[domain] = rec
+    }
+    val := float64(ms)
+    if net.ParseIP(ip) != nil && net.ParseIP(ip).To4() == nil {
+        if rec.EwmaLatency6 == 0 { rec.EwmaLatency6 = val } else { rec.EwmaLatency6 = alpha*val + (1-alpha)*rec.EwmaLatency6 }
+    } else {
+        if rec.EwmaLatency4 == 0 { rec.EwmaLatency4 = val } else { rec.EwmaLatency4 = alpha*val + (1-alpha)*rec.EwmaLatency4 }
+    }
+    p.mu.Unlock()
+    return p.persist()
 }
 
 // IsBlacklisted 判断IP是否在黑名单
@@ -466,22 +464,12 @@ func (p *DNSPool) ListWhitelisted(domain string) ([]string, error) {
 
 // GetAllRecords 获取所有DNS记录（用于peer同步）
 func (p *DNSPool) GetAllRecords(ctx context.Context) map[string]*dnsRecord {
-	result := make(map[string]*dnsRecord)
-	if p.db == nil {
-		return result
-	}
-	p.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("dns_records"))
-		if b == nil {
-			return nil
-		}
-		return b.ForEach(func(k, v []byte) error {
-			var rec dnsRecord
-			if err := json.Unmarshal(v, &rec); err == nil {
-				result[string(k)] = &rec
-			}
-			return nil
-		})
-	})
-	return result
+    p.mu.RLock()
+    defer p.mu.RUnlock()
+    result := make(map[string]*dnsRecord, len(p.records))
+    for k, v := range p.records {
+        c := *v
+        result[k] = &c
+    }
+    return result
 }
