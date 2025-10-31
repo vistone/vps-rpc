@@ -339,6 +339,17 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
     }
 
 	// 发送响应：长度 + 数据
+	// 检查 respData 是否已初始化（防止某些路径未设置 respData 就到这里）
+	if respData == nil {
+		log.Printf("[quic-rpc] 警告：respData 为 nil，返回空响应避免客户端EOF")
+		emptyResp := &rpc.ExchangeDNSResponse{Records: make(map[string]*rpc.DNSRecord)}
+		var err error
+		respData, err = proto.Marshal(emptyResp)
+		if err != nil {
+			log.Printf("序列化空响应失败: %v", err)
+			return
+		}
+	}
 	respLen := uint32(len(respData))
 	binary.BigEndian.PutUint32(length[:], respLen)
     _ = stream.SetWriteDeadline(time.Now().Add(3 * time.Second))
@@ -351,6 +362,7 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 		return
 	}
     _ = stream.SetWriteDeadline(time.Time{})
+	log.Printf("[quic-rpc] 成功发送响应: len=%d", respLen)
 }
 
 // quicConnWrapper 将QUIC连接和流包装为gRPC可以使用的连接
