@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"vps-rpc/config"
+    "vps-rpc/proxy"
 	"vps-rpc/rpc"
 )
 
@@ -321,7 +322,31 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
     total := len(p.knownPeers)
     p.mu.RUnlock()
 
-    // TODO: 实际DNS记录交换逻辑
+    // 与对端交换DNS记录并合并入本地数据库
+    if pool := proxy.GetGlobalDNSPool(); pool != nil {
+        // 构造本地记录（仅IPv4/IPv6）
+        local := map[string]*rpc.DNSRecord{}
+        ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+        all := pool.GetAllRecords(ctx2)
+        cancel2()
+        for domain, r := range all {
+            local[domain] = &rpc.DNSRecord{Ipv4: append([]string{}, r.IPv4...), Ipv6: append([]string{}, r.IPv6...)}
+        }
+        // 发送ExchangeDNS
+        ctx3, cancel3 := context.WithTimeout(context.Background(), 10*time.Second)
+        defer cancel3()
+        resp, err := client.ExchangeDNS(ctx3, &rpc.ExchangeDNSRequest{Records: local})
+        if err != nil {
+            log.Printf("[peer-sync] ExchangeDNS失败 %s: %v", peerAddr, err)
+        } else if len(resp.Records) > 0 {
+            if err := pool.MergeFromPeer(resp.Records); err != nil {
+                log.Printf("[peer-sync] 合并对端DNS记录失败 %s: %v", peerAddr, err)
+            } else {
+                log.Printf("[peer-sync] 已合并来自 %s 的 %d 个域的DNS记录", peerAddr, len(resp.Records))
+            }
+        }
+    }
+
     log.Printf("[peer-sync] 与 %s 同步完成，本次返回=%d，当前已知节点总数=%d", peerAddr, len(peers), total)
 }
 

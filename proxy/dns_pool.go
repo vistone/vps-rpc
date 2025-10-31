@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"vps-rpc/config"
+    "vps-rpc/rpc"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -181,6 +182,46 @@ func (p *DNSPool) save(rec *dnsRecord) error {
 		data, _ := json.Marshal(rec)
 		return b.Put([]byte(rec.Domain), data)
 	})
+}
+
+// MergeFromPeer 将对等节点返回的DNS记录合并入本地数据库（仅合并IPv4/IPv6，忽略黑白名单）
+func (p *DNSPool) MergeFromPeer(records map[string]*rpc.DNSRecord) error {
+    if p == nil || p.db == nil || len(records) == 0 {
+        return nil
+    }
+    return p.db.Update(func(tx *bolt.Tx) error {
+        b := tx.Bucket([]byte("dns_records"))
+        if b == nil {
+            return nil
+        }
+        for domain, r := range records {
+            if r == nil { continue }
+            // 读取现有记录
+            var rec dnsRecord
+            if v := b.Get([]byte(domain)); v != nil {
+                _ = json.Unmarshal(v, &rec)
+            }
+            if rec.Domain == "" { rec.Domain = domain }
+            // 建立去重集合
+            uniq4 := map[string]struct{}{}
+            uniq6 := map[string]struct{}{}
+            for _, ip := range rec.IPv4 { uniq4[ip] = struct{}{} }
+            for _, ip := range rec.IPv6 { uniq6[ip] = struct{}{} }
+            // 合并来自peer的IP
+            for _, ip := range r.Ipv4 { uniq4[ip] = struct{}{} }
+            for _, ip := range r.Ipv6 { uniq6[ip] = struct{}{} }
+            // 回写数组
+            rec.IPv4 = rec.IPv4[:0]
+            rec.IPv6 = rec.IPv6[:0]
+            for ip := range uniq4 { rec.IPv4 = append(rec.IPv4, ip) }
+            for ip := range uniq6 { rec.IPv6 = append(rec.IPv6, ip) }
+            // 更新时间
+            rec.UpdatedAt = time.Now().Unix()
+            data, _ := json.Marshal(&rec)
+            if err := b.Put([]byte(domain), data); err != nil { return err }
+        }
+        return nil
+    })
 }
 
 func (p *DNSPool) get(domain string) (*dnsRecord, error) {
