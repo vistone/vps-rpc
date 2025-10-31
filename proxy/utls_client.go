@@ -159,9 +159,17 @@ func PrewarmConnections(ctx context.Context) {
 					h1c := tempClient.buildHTTP1Client(d, a, chid)
 					
 					// 尝试发送一个HEAD请求来建立连接（轻量级）
-					// 使用很短的超时，仅用于建立连接，不等待完整响应
-					prewarmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-					req, _ := http.NewRequestWithContext(prewarmCtx, "HEAD", "https://"+host+":"+port, nil)
+					// 使用更长的超时（10秒），确保有足够时间建立连接
+					prewarmCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+					req, reqErr := http.NewRequestWithContext(prewarmCtx, "HEAD", "https://"+host+":"+port, nil)
+					if reqErr != nil {
+						cancel()
+						countMu.Lock()
+						failCount++
+						countMu.Unlock()
+						log.Printf("[prewarm] ✗ %s -> %s: 创建请求失败: %v", d, a, reqErr)
+						return
+					}
 					req.Host = d // 设置Host头为域名
 					resp, err := h1c.Do(req) // 使用HTTP/1.1避免协议错误
 					cancel()
@@ -181,11 +189,16 @@ func PrewarmConnections(ctx context.Context) {
 						successCount++
 						countMu.Unlock()
 						log.Printf("[prewarm] ✓ %s -> %s", d, a)
-					} else if err != nil {
-						// 连接失败
+					} else {
+						// 连接失败，记录详细错误
 						countMu.Lock()
 						failCount++
 						countMu.Unlock()
+						if err != nil {
+							log.Printf("[prewarm] ✗ %s -> %s: %v", d, a, err)
+						} else {
+							log.Printf("[prewarm] ✗ %s -> %s: 无响应且无错误", d, a)
+						}
 					}
 				}(domain, addr)
 			}
@@ -447,6 +460,9 @@ func (c *UTLSClient) buildHTTP2Client(host, address string, helloID *utls.Client
 		WriteByteTimeout: 10 * time.Second, // 写入超时
 		MaxReadFrameSize: 1 << 20,          // 1MB最大帧大小
 		AllowHTTP:        false,
+		// 注意：HTTP/2的"Unsolicited response"警告来自golang.org/x/net/http2库内部
+		// 这通常是服务器推送帧导致的，但http2.Transport没有禁用推送的选项
+		// 这个警告不影响功能，可以安全忽略
 	}
 	return &http.Client{
 		Timeout:   c.config.Timeout,
