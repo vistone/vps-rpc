@@ -37,13 +37,15 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
 		return nil, fmt.Errorf("地址格式错误: %w", err)
 	}
 
-	var ipAddress string
+    var ipAddress string
+    var ip4Address string
+    var ip6Address string
 	// 检查是否为IP地址
 	if ip := net.ParseIP(host); ip != nil {
 		// 已经是IP地址，直接使用（最快，无需DNS）
 		ipAddress = address
 	} else {
-		// 是域名，快速解析为IP（优先IPv4，其次IPv6）
+        // 是域名，快速解析为IP（收集v4/v6以做并行拨号）
 		// 使用快速超时（1秒）避免阻塞太久
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
@@ -54,48 +56,78 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
 			// 但这样会慢一些，建议用户直接使用IP地址
 			ipAddress = address
 		} else {
-            // 优先使用IPv6，其次IPv4（确保支持IPv6的节点走v6）
-            var selectedIP net.IP
+            // 记录首个v6和首个v4
             for _, ipa := range ips {
-                if ipa.IP != nil && ipa.IP.To4() == nil { // IPv6
-                    selectedIP = ipa.IP
-                    break
+                if ipa.IP == nil { continue }
+                if ipa.IP.To4() == nil && ip6Address == "" {
+                    ip6Address = net.JoinHostPort(ipa.IP.String(), port)
+                }
+                if ipa.IP.To4() != nil && ip4Address == "" {
+                    ip4Address = net.JoinHostPort(ipa.IP.String(), port)
                 }
             }
-            if selectedIP == nil { // 回落选择第一个IPv4或任意IP
-                for _, ipa := range ips {
-                    if ipa.IP != nil && ipa.IP.To4() != nil {
-                        selectedIP = ipa.IP
-                        break
-                    }
-                }
+            // 默认优先v6，否则v4
+            if ip6Address != "" {
+                ipAddress = ip6Address
+            } else if ip4Address != "" {
+                ipAddress = ip4Address
+            } else {
+                ipAddress = address
             }
-            if selectedIP == nil && len(ips) > 0 {
-                selectedIP = ips[0].IP
-            }
-			ipAddress = net.JoinHostPort(selectedIP.String(), port)
 		}
 	}
 
-	// 使用Early连接以支持0-RTT（最快速度）
+    // 使用Early连接以支持0-RTT（最快速度）
 	quicConfig := &quic.Config{
 		MaxIdleTimeout:       30 * time.Second,
 		HandshakeIdleTimeout: 5 * time.Second,
 		MaxIncomingStreams:   100,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+    // Happy Eyeballs：IPv6先行300ms并行，谁先连上用谁
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    type dialResult struct{ conn *quic.Conn; err error }
+    resCh := make(chan dialResult, 2)
 
-	// 使用IP直连（跳过DNS查询，节省时间）
-	conn, err := quic.DialAddrEarly(ctx, ipAddress, tlsConfig, quicConfig)
-	if err != nil {
-		return nil, fmt.Errorf("QUIC连接失败: %w", err)
-	}
+    started := 0
+    tryDial := func(addr string) {
+        if addr == "" { return }
+        started++
+        go func(a string) {
+            c, e := quic.DialAddrEarly(ctx, a, tlsConfig, quicConfig)
+            resCh <- dialResult{c, e}
+        }(addr)
+    }
+
+    // 启动v6拨号
+    tryDial(ip6Address)
+    // 300ms 后启动v4以避免卡死在坏的族
+    if ip4Address != "" && ip6Address != "" {
+        timer := time.NewTimer(300 * time.Millisecond)
+        go func() { <-timer.C; tryDial(ip4Address) }()
+    } else {
+        tryDial(ip4Address)
+    }
+
+    var conn *quic.Conn
+    var dialErr error
+    for i := 0; i < started; i++ {
+        r := <-resCh
+        if r.err == nil && r.conn != nil {
+            conn = r.conn
+            dialErr = nil
+            break
+        }
+        dialErr = r.err
+    }
+    if conn == nil {
+        return nil, fmt.Errorf("QUIC连接失败: %w", dialErr)
+    }
 
 	return &QuicClient{
 		address:   address,
-		ipAddress: ipAddress,
+        ipAddress: ipAddress,
 		conn:      conn,
 		config:    tlsConfig,
 	}, nil
