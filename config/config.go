@@ -161,6 +161,8 @@ type PeerConfig struct {
 	Seeds []string `toml:"seeds"`
     // MyAddr 本节点对外可达地址（host:port），用于向对端上报
     MyAddr string `toml:"my_addr"`
+    // SyncInterval 互发现同步周期，形如 "5s"、"1m"，为空则用默认
+    SyncInterval string `toml:"sync_interval"`
 }
 
 // AppConfig 全局配置变量
