@@ -801,6 +801,23 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		}
 	}
 
+	// 记录使用的IPv6源地址（如果有）
+	var usedIPv6Source net.IP
+	hostPart, _, _ := net.SplitHostPort(addr)
+	if targetIP := net.ParseIP(hostPart); targetIP != nil {
+		shouldBindIPv6 := false
+		if targetIP.To4() == nil {
+			shouldBindIPv6 = true
+		} else if configPkg.AppConfig.DNS.ForceIPv6Source && HasIPv6() {
+			shouldBindIPv6 = true
+		}
+		if shouldBindIPv6 {
+			usedIPv6Source = NextIPv6LocalAddr()
+		}
+	} else if configPkg.AppConfig.DNS.ForceIPv6Source && HasIPv6() {
+		usedIPv6Source = NextIPv6LocalAddr()
+	}
+
 	// 路由日志：明确 IPv4/IPv6 与目标
 	if selectedIP != "" {
 		log.Printf("[route] target=%s via_ip=%s ipv6=%v dial_addr=%s", host, selectedIP, selectedIsV6, addr)
@@ -840,6 +857,21 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		if c.dns != nil && selectedIP != "" {
 			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
 			_ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
+		}
+		// 记录IPv6源地址统计（参考zeromaps-rpc的实现）
+		if usedIPv6Source != nil {
+			pool := GetGlobalIPv6Pool()
+			if resp.StatusCode == 200 {
+				pool.RecordSuccess(usedIPv6Source)
+			} else if resp.StatusCode == 403 {
+				pool.RecordError403(usedIPv6Source)
+			} else if resp.StatusCode == 429 {
+				pool.RecordError429(usedIPv6Source)
+			} else if resp.StatusCode >= 400 {
+				pool.RecordFailure(usedIPv6Source)
+			} else {
+				pool.RecordSuccess(usedIPv6Source)
+			}
 		}
 		return &rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, nil
 	}
@@ -901,7 +933,28 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
 			_ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
 		}
+		// 记录IPv6源地址统计
+		if usedIPv6Source != nil {
+			pool := GetGlobalIPv6Pool()
+			if resp.StatusCode == 200 {
+				pool.RecordSuccess(usedIPv6Source)
+			} else if resp.StatusCode == 403 {
+				pool.RecordError403(usedIPv6Source)
+			} else if resp.StatusCode == 429 {
+				pool.RecordError429(usedIPv6Source)
+			} else if resp.StatusCode >= 400 {
+				pool.RecordFailure(usedIPv6Source)
+			} else {
+				pool.RecordSuccess(usedIPv6Source)
+			}
+		}
 		return &rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, nil
+	}
+
+	// 全部失败，记录IPv6源地址失败
+	if usedIPv6Source != nil {
+		pool := GetGlobalIPv6Pool()
+		pool.RecordFailure(usedIPv6Source)
 	}
 
 	// 全部失败，返回聚合错误，方便定位

@@ -196,14 +196,10 @@ func StartV6PoolRefresher() {
 }
 
 // NextIPv6LocalAddr 轮询返回一个本机 IPv6 源地址
+// 使用智能健康检查，自动过滤不健康的地址
 func NextIPv6LocalAddr() net.IP {
-    StartV6PoolRefresher()
-    v6Mu.Lock()
-    defer v6Mu.Unlock()
-    if len(v6Pool) == 0 { return nil }
-    ip := v6Pool[v6Idx]
-    v6Idx = (v6Idx + 1) % len(v6Pool)
-    return ip
+	pool := GetGlobalIPv6Pool()
+	return pool.GetHealthyNext()
 }
 
 
