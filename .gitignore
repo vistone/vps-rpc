@@ -4,5 +4,18 @@
 # Temporary test files
 tmp_*.go
 
+# Binary files
+vps-rpc
+rpc_latency
+cmd/*/vps-rpc
+cmd/*/rpc_latency
+
+# Log files
+*.log
+vps-rpc*.log
+
+# Database files
+*.bolt
+
 # Optionally ignore workflow until PAT has workflow scope
 .github/workflows/deploy.yml
