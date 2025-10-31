@@ -403,12 +403,18 @@ func (p *DNSPool) ReportResult(domain, ip string, status int) error {
         // IPv6
         present := false
         for _, v := range rec.IPv6 { if v == ip { present = true; break } }
-        if !present { rec.IPv6 = append(rec.IPv6, ip) }
+        if !present {
+            rec.IPv6 = append(rec.IPv6, ip)
+            log.Printf("[dns-pool] add %s ip=%s v6=true", domain, ip)
+        }
     } else {
         // IPv4 或未知按v4处理
         present := false
         for _, v := range rec.IPv4 { if v == ip { present = true; break } }
-        if !present { rec.IPv4 = append(rec.IPv4, ip) }
+        if !present {
+            rec.IPv4 = append(rec.IPv4, ip)
+            log.Printf("[dns-pool] add %s ip=%s v6=false", domain, ip)
+        }
     }
     if status == 403 {
         rec.Blacklist[ip] = true
