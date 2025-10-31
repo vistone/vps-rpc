@@ -49,8 +49,8 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
 		ipAddress = address
 	} else {
         // 是域名，快速解析为IP（收集v4/v6以做并行拨号）
-		// 使用快速超时（1秒）避免阻塞太久
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		// 使用适中的超时（3秒）平衡速度和可靠性
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 		cancel()
 		
@@ -94,7 +94,8 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
 	}
 
     // Happy Eyeballs：根据设备能力选择IPv4/IPv6，不支持IPv6时只尝试IPv4
-    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    // 增加超时时间以适应高延迟网络环境（20秒）
+    ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
     defer cancel()
     type dialResult struct{ conn *quic.Conn; err error }
     resCh := make(chan dialResult, 2)
@@ -158,14 +159,18 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
             // IPv6路由不可达，标记并立即尝试IPv4
             ip6Failed = true
             dialErr = r.err
-            // 如果IPv4地址可用，立即尝试IPv4（不等其他连接结果）
+            // 如果IPv4地址可用，立即尝试IPv4（使用新的context，避免使用已接近超时的context）
             if ip4Address != "" {
                 log.Printf("[quic-client] IPv6连接失败 (%v)，立即回退到IPv4: %s", r.err, ip4Address)
-                if c4, e4 := quic.DialAddrEarly(ctx, ip4Address, tlsConfig, quicConfig); e4 == nil {
+                // 创建新的context，给IPv4连接足够的超时时间
+                ctxV4, cancelV4 := context.WithTimeout(context.Background(), 15*time.Second)
+                if c4, e4 := quic.DialAddrEarly(ctxV4, ip4Address, tlsConfig, quicConfig); e4 == nil {
+                    cancelV4()
                     conn = c4
                     dialErr = nil
                     break
                 } else {
+                    cancelV4()
                     log.Printf("[quic-client] IPv4连接也失败: %v", e4)
                 }
             }
@@ -178,23 +183,29 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
     }
     
     if conn == nil {
-        // 如果IPv6失败且IPv4可用但未尝试，强制使用IPv4
+        // 如果IPv6失败且IPv4可用但未尝试，强制使用IPv4（使用新context）
         if ip6Failed && ip4Address != "" && ipAddress == ip6Address {
             log.Printf("[quic-client] 强制使用IPv4连接: %s", ip4Address)
-            if c4, e4 := quic.DialAddrEarly(ctx, ip4Address, tlsConfig, quicConfig); e4 == nil {
+            ctxV4, cancelV4 := context.WithTimeout(context.Background(), 15*time.Second)
+            if c4, e4 := quic.DialAddrEarly(ctxV4, ip4Address, tlsConfig, quicConfig); e4 == nil {
+                cancelV4()
                 conn = c4
                 dialErr = nil
             } else {
+                cancelV4()
                 dialErr = e4
             }
         }
         
-        // 最后兜底：尝试原始地址（可能是域名或IPv4）
+        // 最后兜底：尝试原始地址（可能是域名或IPv4，使用新context）
         if conn == nil {
-            if c2, e2 := quic.DialAddrEarly(ctx, ipAddress, tlsConfig, quicConfig); e2 == nil {
+            ctxFallback, cancelFallback := context.WithTimeout(context.Background(), 15*time.Second)
+            if c2, e2 := quic.DialAddrEarly(ctxFallback, ipAddress, tlsConfig, quicConfig); e2 == nil {
+                cancelFallback()
                 conn = c2
                 dialErr = nil
             } else {
+                cancelFallback()
                 if dialErr == nil { dialErr = e2 }
                 return nil, fmt.Errorf("QUIC连接失败: %w", dialErr)
             }
