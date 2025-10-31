@@ -906,6 +906,21 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
 			_ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
 		}
+		// 记录IPv6源地址统计
+		if usedIPv6Source != nil {
+			pool := GetGlobalIPv6Pool()
+			if resp.StatusCode == 200 {
+				pool.RecordSuccess(usedIPv6Source)
+			} else if resp.StatusCode == 403 {
+				pool.RecordError403(usedIPv6Source)
+			} else if resp.StatusCode == 429 {
+				pool.RecordError429(usedIPv6Source)
+			} else if resp.StatusCode >= 400 {
+				pool.RecordFailure(usedIPv6Source)
+			} else {
+				pool.RecordSuccess(usedIPv6Source)
+			}
+		}
 		return &rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, nil
 	}
 	errH1 := err
