@@ -6,8 +6,8 @@ port = 4242
 
 [quic]
 # QUIC配置
-max_idle_timeout = "30s"
-handshake_idle_timeout = "5s"
+max_idle_timeout = "120s"  # 增加空闲超时，避免高并发时连接因短暂空闲而断开
+handshake_idle_timeout = "10s"  # 增加握手超时，适应高并发场景
 max_incoming_streams = 100
 max_incoming_uni_streams = 100
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -20,7 +21,7 @@ func main() {
 
 	nodes := []string{"tile0.zeromaps.cn:4242", "tile3.zeromaps.cn:4242"}
 	url := "https://kh.google.com/rt/earth/PlanetoidMetadata"
-	requestsPerNode := 300
+	totalPerNode := 300
 
 	headers := map[string]string{
 		"Accept":          "*/*",
@@ -37,7 +38,7 @@ func main() {
 		wg.Add(1)
 		go func(n string) {
 			defer wg.Done()
-			res := testNode(n, url, headers, requestsPerNode)
+			res := testNodeQuota(n, url, headers, totalPerNode)
 			mu.Lock()
 			results[n] = res
 			mu.Unlock()
@@ -46,7 +47,6 @@ func main() {
 
 	wg.Wait()
 
-	// 汇总输出
 	fmt.Println("\n=== 测试结果汇总 ===")
 	for _, node := range nodes {
 		res := results[node]
@@ -74,7 +74,7 @@ type nodeResult struct {
 	ipCounts     []ipCount
 }
 
-func testNode(node, url string, headers map[string]string, n int) *nodeResult {
+func testNodeQuota(node, url string, headers map[string]string, total int) *nodeResult {
 	cli, err := client.NewClient(&client.ClientConfig{
 		Address:            node,
 		Timeout:            35 * time.Second,
@@ -84,7 +84,7 @@ func testNode(node, url string, headers map[string]string, n int) *nodeResult {
 		EnableRetry:       false,
 	})
 	if err != nil {
-		return &nodeResult{fail: n}
+		return &nodeResult{fail: total}
 	}
 	defer cli.Close()
 
@@ -93,67 +93,80 @@ func testNode(node, url string, headers map[string]string, n int) *nodeResult {
 	}
 	ipMap := make(map[string]int)
 	var ipMu sync.Mutex
-	
-	// 高并发：使用goroutine池（5个并发，避免QUIC连接过载）
-	concurrency := 5
-	sem := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
-	
-	for i := 1; i <= n; i++ {
-		wg.Add(1)
-		go func(reqNum int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			
-			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-			start := time.Now()
-			resp, err := cli.Fetch(ctx, &rpc.FetchRequest{
-				Url:     url,
-				Headers: headers,
-				TlsClient: rpc.TLSClientType_CHROME,
-			})
-			cancel()
-			duration := time.Since(start)
-			
-			ipMu.Lock()
-		if err != nil {
-			res.fail++
-			fmt.Printf("[%s] 请求%d失败: %v\n", node, reqNum, err)
-		} else if resp.Error != "" {
-			res.fail++
-			fmt.Printf("[%s] 请求%d返回错误: %s\n", node, reqNum, resp.Error)
-		} else if resp.StatusCode == 200 {
-			res.ok++
-			res.totalLatency += duration.Milliseconds()
-			ip := resp.Headers["X-VPS-IP"]
-			if ip != "" {
-				ipMap[ip]++
-			}
-		} else {
-			res.fail++
-			fmt.Printf("[%s] 请求%d状态码: %d\n", node, reqNum, resp.StatusCode)
+
+	done := 0
+	rand.Seed(time.Now().UnixNano())
+
+	for done < total {
+		// 随机并发数 3-8
+		concurrency := rand.Intn(6) + 3
+		remain := total - done
+		if concurrency > remain {
+			concurrency = remain
 		}
-			currentOk := res.ok
-			currentFail := res.fail
+
+		fmt.Printf("[%s] round %d..%d concurrency=%d\n", node, done+1, done+concurrency, concurrency)
+
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, concurrency)
+
+		for i := 0; i < concurrency; i++ {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+				start := time.Now()
+				resp, err := cli.Fetch(ctx, &rpc.FetchRequest{
+					Url:     url,
+					Headers: headers,
+					TlsClient: rpc.TLSClientType_CHROME,
+				})
+				cancel()
+				duration := time.Since(start)
+
+				ipMu.Lock()
+				if err != nil {
+					res.fail++
+				} else if resp.Error != "" {
+					res.fail++
+				} else if resp.StatusCode == 200 {
+					res.ok++
+					res.totalLatency += duration.Milliseconds()
+					ip := resp.Headers["X-VPS-IP"]
+					if ip != "" {
+						ipMap[ip]++
+					}
+				} else {
+					res.fail++
+				}
+				ipMu.Unlock()
+			}()
+		}
+		wg.Wait()
+		done += concurrency
+
+		if done%50 == 0 {
+			ipMu.Lock()
+			fmt.Printf("  [%s] 进度: %d/%d (成功=%d 失败=%d)\n", node, done, total, res.ok, res.fail)
 			ipMu.Unlock()
-			
-			if reqNum%50 == 0 {
-				fmt.Printf("[%s] 进度: %d/%d (成功=%d 失败=%d)\n", node, reqNum, n, currentOk, currentFail)
-			}
-		}(i)
+		}
 	}
-	wg.Wait()
 
 	// 排序IP计数
+	ipMu.Lock()
 	for ip, count := range ipMap {
 		res.ipCounts = append(res.ipCounts, ipCount{ip: ip, count: count})
 	}
+	ipMu.Unlock()
+
 	sort.Slice(res.ipCounts, func(i, j int) bool {
 		return res.ipCounts[i].count > res.ipCounts[j].count
 	})
-	if len(res.ipCounts) > 10 {
-		res.ipCounts = res.ipCounts[:10]
+	if len(res.ipCounts) > 15 {
+		res.ipCounts = res.ipCounts[:15]
 	}
 
 	return res

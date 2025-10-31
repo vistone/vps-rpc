@@ -103,11 +103,19 @@ func (s *QuicRpcServer) handleConnection(conn *quic.Conn) {
 	log.Printf("已接受来自 %s 的QUIC连接", conn.RemoteAddr().String())
 
 	for {
-        stream, err := conn.AcceptStream(context.Background())
-		if err != nil {
-			log.Printf("接受QUIC流失败: %v", err)
-			return
-		}
+        // 添加超时，避免无限期阻塞导致客户端超时
+        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        stream, err := conn.AcceptStream(ctx)
+        cancel()
+        
+        if err != nil {
+            // 超时错误，继续循环等待下一个流（不关闭连接）
+            if err == context.DeadlineExceeded {
+                continue
+            }
+            log.Printf("接受QUIC流失败: %v", err)
+            return
+        }
 
         go s.handleStreamWithConn(conn, stream)
 	}
