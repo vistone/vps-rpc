@@ -39,6 +39,14 @@ func getRandomTLSClientType() rpc.TLSClientType {
 	return candidates[idx]
 }
 
+// getRandomConcurrency 返回随机并发数（5-8），避免固定模式被识别为机器流量
+func getRandomConcurrency() int {
+	// 5-8的随机数
+	candidates := []int{5, 6, 7, 8}
+	idx := int(time.Now().UnixNano() % int64(len(candidates)))
+	return candidates[idx]
+}
+
 // CrawlerServer 爬虫服务器结构体
 // 实现了rpc.CrawlerServiceServer接口，提供网页抓取服务
 type CrawlerServer struct {
@@ -171,17 +179,14 @@ func (s *CrawlerServer) BatchFetch(ctx context.Context, req *rpc.BatchFetchReque
 	// 记录批量抓取日志，包含请求的数量
 	log.Printf("正在批量抓取 %d 个 URL", len(req.Requests))
 
-	// 确定最大并发数
-	// 如果请求中指定了max_concurrent，则使用该值；否则使用配置中的默认值
+	// 确定最大并发数：如果请求中指定了max_concurrent，则使用该值；否则从配置读取
 	maxConcurrent := int(req.MaxConcurrent)
 	if maxConcurrent <= 0 {
 		maxConcurrent = config.AppConfig.Crawler.MaxConcurrentRequests
 	}
-	// 如果配置中的值也为0或未设置，使用配置中的默认值10
+	// 如果配置中的值也为0或未设置，使用随机化并发数（5-8，避免被识别规律）
 	if maxConcurrent <= 0 {
-		// 从配置中获取默认值（如果配置也未设置，这里会使用10作为最终默认值）
-		// 注意：这个10是最后的兜底值，实际应该通过配置设置
-		maxConcurrent = 10
+		maxConcurrent = getRandomConcurrency()
 	}
 
 	// 创建响应数组，用于存储所有抓取结果
