@@ -74,6 +74,11 @@ func (s *QuicRpcServer) RegisterAdminService(service *AdminServer) {
 	// QUIC模式下暂不支持管理服务
 }
 
+// SetPeerServer 设置PeerService服务器（用于main.go初始化）
+func (s *QuicRpcServer) SetPeerServer(peerServer rpc.PeerServiceServer) {
+	s.peerServer = peerServer
+}
+
 // Serve 启动服务器服务
 // 基于QUIC流的自定义RPC协议：每个请求使用一个新流，直接传输protobuf消息
 func (s *QuicRpcServer) Serve() error {
@@ -108,6 +113,7 @@ func (s *QuicRpcServer) handleConnection(conn *quic.Conn) {
 
 // handleStream 处理单个QUIC流：实现自定义RPC协议
 // 协议格式：4字节长度（大端序）+ protobuf消息
+// 支持多服务路由：通过消息字段特征识别请求类型
 func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
 	defer stream.Close()
 
@@ -131,42 +137,90 @@ func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
 		return
 	}
 
-	// 解析请求
-	var req rpc.FetchRequest
-	if err := proto.Unmarshal(msgData, &req); err != nil {
-		log.Printf("解析请求失败: %v", err)
-		return
-	}
-
-	// 记录QUIC RPC请求开始时间（用于计算端到端延迟）
-	quicRpcStart := time.Now()
-	
-	// 调用爬虫服务
+	// 解析并路由到对应服务
 	ctx := context.Background()
-	resp, err := s.crawlerServer.Fetch(ctx, &req)
-	
-	quicRpcLatency := time.Since(quicRpcStart)
-	if err != nil {
-		resp = &rpc.FetchResponse{
-			Url:        req.Url,
-			StatusCode: 500,
-			Error:      err.Error(),
-		}
-	}
+	var respData []byte
 
-	// 序列化响应
-	serializeStart := time.Now()
-	respData, err := proto.Marshal(resp)
-	if err != nil {
-		log.Printf("序列化响应失败: %v", err)
+	// 尝试解析为FetchRequest（CrawlerService）
+	var fetchReq rpc.FetchRequest
+	if err := proto.Unmarshal(msgData, &fetchReq); err == nil && fetchReq.Url != "" {
+		// 确认是FetchRequest，调用CrawlerService
+		quicRpcStart := time.Now()
+		resp, err := s.crawlerServer.Fetch(ctx, &fetchReq)
+		quicRpcLatency := time.Since(quicRpcStart)
+		if err != nil {
+			resp = &rpc.FetchResponse{
+				Url:        fetchReq.Url,
+				StatusCode: 500,
+				Error:      err.Error(),
+			}
+		}
+		respData, err = proto.Marshal(resp)
+		if err != nil {
+			log.Printf("序列化响应失败: %v", err)
+			return
+		}
+		log.Printf("[quic-rpc] URL=%s, 服务处理=%v, 总计=%v", fetchReq.Url, quicRpcLatency, quicRpcLatency)
+	} else if s.peerServer != nil {
+		// 尝试解析为PeerService相关请求
+		// ExchangeDNSRequest: 有records字段
+		var exchangeDNSReq rpc.ExchangeDNSRequest
+		if err := proto.Unmarshal(msgData, &exchangeDNSReq); err == nil && len(exchangeDNSReq.Records) > 0 {
+			resp, err := s.peerServer.ExchangeDNS(ctx, &exchangeDNSReq)
+			if err != nil {
+				log.Printf("ExchangeDNS失败: %v", err)
+				return
+			}
+			respData, err = proto.Marshal(resp)
+			if err != nil {
+				log.Printf("序列化响应失败: %v", err)
+				return
+			}
+			log.Printf("[quic-rpc] ExchangeDNS: 本地=%d, 远程=%d", len(exchangeDNSReq.Records), len(resp.Records))
+		} else {
+			// GetPeersRequest: 空消息
+			var getPeersReq rpc.GetPeersRequest
+			if err := proto.Unmarshal(msgData, &getPeersReq); err == nil {
+				resp, err := s.peerServer.GetPeers(ctx, &getPeersReq)
+				if err != nil {
+					log.Printf("GetPeers失败: %v", err)
+					return
+				}
+				respData, err = proto.Marshal(resp)
+				if err != nil {
+					log.Printf("序列化响应失败: %v", err)
+					return
+				}
+				log.Printf("[quic-rpc] GetPeers: %d个节点", len(resp.Peers))
+			} else {
+				// ReportNodeRequest: 有address字段
+				var reportNodeReq rpc.ReportNodeRequest
+				if err := proto.Unmarshal(msgData, &reportNodeReq); err == nil && reportNodeReq.Address != "" {
+					resp, err := s.peerServer.ReportNode(ctx, &reportNodeReq)
+					if err != nil {
+						log.Printf("ReportNode失败: %v", err)
+						return
+					}
+					respData, err = proto.Marshal(resp)
+					if err != nil {
+						log.Printf("序列化响应失败: %v", err)
+						return
+					}
+					log.Printf("[quic-rpc] ReportNode: %s", reportNodeReq.Address)
+				} else {
+					log.Printf("无法识别的请求类型")
+					return
+				}
+			}
+		}
+	} else {
+		log.Printf("未知请求类型且PeerServer未初始化")
 		return
 	}
-	serializeLatency := time.Since(serializeStart)
 
 	// 发送响应：长度 + 数据
 	respLen := uint32(len(respData))
 	binary.BigEndian.PutUint32(length[:], respLen)
-	sendStart := time.Now()
 	if _, err := stream.Write(length[:]); err != nil {
 		log.Printf("发送响应长度失败: %v", err)
 		return
@@ -175,12 +229,6 @@ func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
 		log.Printf("发送响应数据失败: %v", err)
 		return
 	}
-	sendLatency := time.Since(sendStart)
-	totalLatency := time.Since(quicRpcStart)
-	
-	// 记录详细的QUIC RPC处理时间分解
-	log.Printf("[quic-rpc] URL=%s, 服务处理=%v, 序列化=%v, 发送=%v, 总计=%v", 
-		req.Url, quicRpcLatency, serializeLatency, sendLatency, totalLatency)
 }
 
 // quicConnWrapper 将QUIC连接和流包装为gRPC可以使用的连接

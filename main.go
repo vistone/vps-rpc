@@ -5,6 +5,7 @@ import (
     "os/signal"
     "syscall"
 
+    "vps-rpc/client"
     "vps-rpc/config"
     "vps-rpc/logger"
     "vps-rpc/proxy"
@@ -36,8 +37,10 @@ func main() {
 
 	// 初始化全局 DNS 池与 ProbeManager
 	var probe *proxy.ProbeManager
+	var dnsPool *proxy.DNSPool
 	if config.AppConfig.DNS.Enabled && config.AppConfig.DNS.DBPath != "" {
 		if p, err := proxy.NewDNSPool(config.AppConfig.DNS.DBPath); err == nil {
+			dnsPool = p
 			proxy.SetGlobalDNSPool(p)
 			probe = proxy.NewProbeManager(p)
 			proxy.SetGlobalProbeManager(probe) // 设置全局ProbeManager
@@ -62,6 +65,20 @@ func main() {
 
 	// 注册服务（QUIC模式下已在NewQuicRpcServer传入，此处保留用于兼容）
 	grpcServer.RegisterService(crawlerServer)
+
+	// 初始化并注册PeerService服务器（用于节点间DNS池共享）
+	var peerSync *client.PeerSyncManager
+	if dnsPool != nil && len(config.AppConfig.Peer.Seeds) > 0 {
+		peerServer := server.NewPeerServiceServer(dnsPool)
+		grpcServer.SetPeerServer(peerServer)
+		log.Info("PeerService已启用，支持节点间DNS池共享")
+		
+		// 启动PeerSyncManager客户端，定期与seeds同步DNS记录
+		peerSync = client.NewPeerSyncManager()
+		peerSync.Start()
+		defer peerSync.Stop()
+		log.Info("PeerSyncManager已启动，定期与种子节点同步")
+	}
 
 	// 注意：QUIC模式下暂不支持管理服务（AdminServer）
 	// 如需管理功能，可单独启动一个gRPC over TCP的管理端口
