@@ -210,11 +210,15 @@ func (p *DNSPool) MergeFromPeer(records map[string]*rpc.DNSRecord) error {
             // 合并来自peer的IP
             for _, ip := range r.Ipv4 { uniq4[ip] = struct{}{} }
             for _, ip := range r.Ipv6 { uniq6[ip] = struct{}{} }
-            // 回写数组
+            // 回写数组（只新增，不删除）
             rec.IPv4 = rec.IPv4[:0]
             rec.IPv6 = rec.IPv6[:0]
             for ip := range uniq4 { rec.IPv4 = append(rec.IPv4, ip) }
             for ip := range uniq6 { rec.IPv6 = append(rec.IPv6, ip) }
+            // 将来自对端的IP记为白名单（不同节点黑名单可能不同，不能同步黑名单）
+            if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
+            for _, ip := range r.Ipv4 { rec.Whitelist[ip] = true }
+            for _, ip := range r.Ipv6 { rec.Whitelist[ip] = true }
             // 更新时间
             rec.UpdatedAt = time.Now().Unix()
             data, _ := json.Marshal(&rec)

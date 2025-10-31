@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+    "net"
 	"sync"
 	"time"
 
@@ -324,13 +325,31 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
 
     // 与对端交换DNS记录并合并入本地数据库
     if pool := proxy.GetGlobalDNSPool(); pool != nil {
-        // 构造本地记录（仅IPv4/IPv6）
+        // 构造本地记录：仅同步“白名单”中的IP（每个节点黑名单不同，不能同步黑名单）
         local := map[string]*rpc.DNSRecord{}
         ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
         all := pool.GetAllRecords(ctx2)
         cancel2()
         for domain, r := range all {
-            local[domain] = &rpc.DNSRecord{Ipv4: append([]string{}, r.IPv4...), Ipv6: append([]string{}, r.IPv6...)}
+            if r.Whitelist == nil || len(r.Whitelist) == 0 {
+                continue
+            }
+            var v4, v6 []string
+            for ip := range r.Whitelist {
+                parsed := net.ParseIP(ip)
+                if parsed == nil {
+                    continue
+                }
+                if parsed.To4() != nil {
+                    v4 = append(v4, ip)
+                } else {
+                    v6 = append(v6, ip)
+                }
+            }
+            if len(v4) == 0 && len(v6) == 0 {
+                continue
+            }
+            local[domain] = &rpc.DNSRecord{Ipv4: v4, Ipv6: v6}
         }
         // 发送ExchangeDNS
         ctx3, cancel3 := context.WithTimeout(context.Background(), 10*time.Second)
