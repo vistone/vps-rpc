@@ -30,11 +30,7 @@ var seedData = `{
     "next_index4": 0,
     "next_index6": 0,
     "next_prefer_v6": true,
-    "blacklist": {
-      "2404:6800:4012:9::200e": true,
-      "142.250.204.46": true,
-      "142.250.198.78": true
-    },
+    "blacklist": {},
     "whitelist": {},
     "ewma_latency4": 0,
     "ewma_latency6": 0
