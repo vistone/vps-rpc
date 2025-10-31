@@ -1,7 +1,10 @@
 package proxy
 
 import (
+    "bufio"
     "net"
+    "os"
+    "strings"
     "sync"
     "time"
 )
@@ -38,21 +41,130 @@ func HasIPv6() bool {
 }
 
 // DiscoverIPv6LocalAddrs 返回可用的本机 IPv6 源地址列表（全局单播）
+// 改进：直接从/proc/net/if_inet6读取所有IPv6地址，包括所有接口和别名地址
+// 这样可以检测到net.Interfaces()可能遗漏的地址
 func DiscoverIPv6LocalAddrs() []net.IP {
     out := []net.IP{}
-    ifaces, _ := net.Interfaces()
-    for _, iface := range ifaces {
-        if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 { continue }
-        addrs, _ := iface.Addrs()
-        for _, a := range addrs {
-            ip, _, _ := net.ParseCIDR(a.String())
-            if ip == nil || ip.To4() != nil { continue }
-            // 简单过滤：排除链路本地 fe80::/10
-            if ip.IsLinkLocalUnicast() { continue }
+    seen := make(map[string]bool) // 用于去重
+    
+    // 方法1：从/proc/net/if_inet6读取所有IPv6地址（最完整）
+    // 格式：address scope flags interface
+    if file, err := os.Open("/proc/net/if_inet6"); err == nil {
+        defer file.Close()
+        scanner := bufio.NewScanner(file)
+        for scanner.Scan() {
+            line := strings.TrimSpace(scanner.Text())
+            if line == "" {
+                continue
+            }
+            
+            // 解析/proc/net/if_inet6格式
+            // 例如: 2408820718e66ce0e21e0cab8a2a6753 03 40 00 01 wlp0s20f3
+            fields := strings.Fields(line)
+            if len(fields) < 6 {
+                continue
+            }
+            
+            // 第一个字段是IPv6地址（32个十六进制字符）
+            hexAddr := fields[0]
+            if len(hexAddr) != 32 {
+                continue
+            }
+            
+            // 转换为net.IP
+            ip := parseHexIPv6(hexAddr)
+            if ip == nil {
+                continue
+            }
+            
+            // 排除链路本地地址 fe80::/10 和环回地址 ::1
+            if ip.IsLinkLocalUnicast() || ip.IsLoopback() {
+                continue
+            }
+            
+            // 去重
+            ipStr := ip.String()
+            if seen[ipStr] {
+                continue
+            }
+            seen[ipStr] = true
+            
             out = append(out, ip)
         }
     }
+    
+    // 方法2：如果/proc/net/if_inet6不可用，回退到net.Interfaces()方法
+    if len(out) == 0 {
+        ifaces, err := net.Interfaces()
+        if err == nil {
+            for _, iface := range ifaces {
+                if iface.Flags&net.FlagUp == 0 { continue }
+                
+                addrs, err := iface.Addrs()
+                if err != nil {
+                    continue
+                }
+                
+                for _, a := range addrs {
+                    ip, _, err := net.ParseCIDR(a.String())
+                    if err != nil || ip == nil {
+                        continue
+                    }
+                    
+                    if ip.To4() != nil {
+                        continue
+                    }
+                    
+                    if ip.IsLinkLocalUnicast() || ip.IsLoopback() {
+                        continue
+                    }
+                    
+                    ipStr := ip.String()
+                    if seen[ipStr] {
+                        continue
+                    }
+                    seen[ipStr] = true
+                    
+                    out = append(out, ip)
+                }
+            }
+        }
+    }
+    
     return out
+}
+
+// parseHexIPv6 将32个十六进制字符转换为net.IP
+func parseHexIPv6(hex string) net.IP {
+    if len(hex) != 32 {
+        return nil
+    }
+    
+    ip := make(net.IP, 16)
+    for i := 0; i < 32; i += 2 {
+        var b byte
+        for j := 0; j < 2; j++ {
+            c := hex[i+j]
+            var val byte
+            if c >= '0' && c <= '9' {
+                val = c - '0'
+            } else if c >= 'a' && c <= 'f' {
+                val = c - 'a' + 10
+            } else if c >= 'A' && c <= 'F' {
+                val = c - 'A' + 10
+            } else {
+                return nil
+            }
+            if j == 0 {
+                b = val << 4
+            } else {
+                b |= val
+            }
+        }
+        ip[i/2] = b
+    }
+    
+    return ip
 }
 
 // 全局 IPv6 源地址池与轮询索引
