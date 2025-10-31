@@ -47,6 +47,9 @@ type DNSPool struct {
     lastPersist  time.Time
     fileModTime  time.Time
     closed       chan struct{}
+    // 并发检测：用于检测短时间内同一域名的并发请求
+    concurrentRequests map[string]int64 // domain -> 最近请求时间戳
+    concurrentMu       sync.Mutex
 }
 
 func NewDNSPool(path string) (*DNSPool, error) {
@@ -57,9 +60,10 @@ func NewDNSPool(path string) (*DNSPool, error) {
         path = filepath.Join(path, "dns_pool.json")
     }
     pool := &DNSPool{
-        records:  make(map[string]*dnsRecord),
-        filename: path,
-        closed:   make(chan struct{}),
+        records:            make(map[string]*dnsRecord),
+        filename:           path,
+        closed:             make(chan struct{}),
+        concurrentRequests: make(map[string]int64),
     }
     if err := pool.loadFromDisk(); err != nil {
         if !errors.Is(err, os.ErrNotExist) {
@@ -515,7 +519,33 @@ func (p *DNSPool) GetAllDomainsAndIPs() map[string][]string {
 
 // NextIP 轮询选择一个 IP（优先IPv6，其次IPv4；可调整策略）
 // 优化：请求路径使用快速解析模式，避免阻塞请求
+// 增强：自动检测并发，在并发时使用批量分配确保负载分流
 func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bool, err error) {
+	// 并发检测：检查是否有其他请求在同一时间窗口内
+	p.concurrentMu.Lock()
+	now := time.Now().UnixNano()
+	lastTime, exists := p.concurrentRequests[domain]
+	const concurrentWindow = 50 * time.Millisecond // 50ms内的请求视为并发批次
+	isConcurrent := exists && (now-lastTime < int64(concurrentWindow))
+	
+	// 如果是并发请求，使用批量分配（预先分配8个IP，但只返回第一个）
+	// 这样后续的并发请求会自动分配到不同的IP
+	if isConcurrent {
+		// 更新最后时间
+		p.concurrentRequests[domain] = now
+		p.concurrentMu.Unlock()
+		
+		// 使用批量分配，预先分配8个IP
+		if ips, e := p.NextIPs(ctx, domain, 8); e == nil && len(ips) > 0 {
+			// 返回第一个IP，后续请求会从下一个索引开始
+			return ips[0].IP, ips[0].IsV6, nil
+		}
+		// 如果批量分配失败，回退到单个分配
+	} else {
+		// 非并发请求，更新最后时间
+		p.concurrentRequests[domain] = now
+		p.concurrentMu.Unlock()
+	}
 	p.mu.Lock()
 	rec := p.records[domain]
 	needResolve := rec == nil
@@ -634,6 +664,134 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
     p.mu.Unlock()
     if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
     return selected.ip, selected.isV6, nil
+}
+
+// NextIPs 批量获取多个不同的IP（用于并发请求负载分流）
+// count: 需要获取的IP数量
+// 返回值: []struct{IP string, IsV6 bool} - IP列表，保证每个IP都不同（在可用IP数量允许的情况下）
+func (p *DNSPool) NextIPs(ctx context.Context, domain string, count int) ([]struct{IP string; IsV6 bool}, error) {
+	if count <= 0 {
+		return nil, fmt.Errorf("count must be > 0")
+	}
+	
+	p.mu.Lock()
+	rec := p.records[domain]
+	needResolve := rec == nil
+	p.mu.Unlock()
+	
+	if needResolve {
+		var e error
+		if rec, e = p.resolveAndStoreQuick(ctx, domain); e != nil {
+			return nil, e
+		}
+		p.mu.Lock()
+		rec = p.records[domain]
+		p.mu.Unlock()
+		if rec == nil {
+			return nil, fmt.Errorf("解析后仍无记录: %s", domain)
+		}
+	}
+	
+	allowV4 := HasIPv4()
+	allowV6 := HasIPv6()
+	
+	p.mu.Lock()
+	rec = p.records[domain]
+	if rec == nil {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("记录不存在: %s", domain)
+	}
+	if rec.Blacklist == nil { rec.Blacklist = map[string]bool{} }
+	if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
+	
+	// 将白名单并入候选列表
+	if len(rec.Whitelist) > 0 {
+		seen4 := map[string]struct{}{}
+		seen6 := map[string]struct{}{}
+		for _, ipx := range rec.IPv4 { seen4[ipx] = struct{}{} }
+		for _, ipx := range rec.IPv6 { seen6[ipx] = struct{}{} }
+		for ipx := range rec.Whitelist {
+			parsed := net.ParseIP(ipx)
+			if parsed == nil { continue }
+			if parsed.To4() != nil {
+				if _, ok := seen4[ipx]; !ok { rec.IPv4 = append(rec.IPv4, ipx); seen4[ipx] = struct{}{} }
+			} else {
+				if _, ok := seen6[ipx]; !ok { rec.IPv6 = append(rec.IPv6, ipx); seen6[ipx] = struct{}{} }
+			}
+		}
+	}
+	
+	// 合并所有可用IP到单一列表（排除黑名单）
+	allAvailableIPs := make([]struct {
+		ip   string
+		isV6 bool
+	}, 0)
+	
+	preferV6 := config.AppConfig.DNS.PreferIPv6
+	
+	if allowV6 && (preferV6 || !allowV4) {
+		for _, ip := range rec.IPv6 {
+			if !rec.Blacklist[ip] {
+				allAvailableIPs = append(allAvailableIPs, struct {
+					ip   string
+					isV6 bool
+				}{ip, true})
+			}
+		}
+		if allowV4 {
+			for _, ip := range rec.IPv4 {
+				if !rec.Blacklist[ip] {
+					allAvailableIPs = append(allAvailableIPs, struct {
+						ip   string
+						isV6 bool
+					}{ip, false})
+				}
+			}
+		}
+	} else {
+		if allowV4 {
+			for _, ip := range rec.IPv4 {
+				if !rec.Blacklist[ip] {
+					allAvailableIPs = append(allAvailableIPs, struct {
+						ip   string
+						isV6 bool
+					}{ip, false})
+				}
+			}
+		}
+		if allowV6 {
+			for _, ip := range rec.IPv6 {
+				if !rec.Blacklist[ip] {
+					allAvailableIPs = append(allAvailableIPs, struct {
+						ip   string
+						isV6 bool
+					}{ip, true})
+				}
+			}
+		}
+	}
+	
+	if len(allAvailableIPs) == 0 {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("无可用IP: %s", domain)
+	}
+	
+	// 批量分配：从当前索引开始，连续分配count个不同的IP
+	result := make([]struct{IP string; IsV6 bool}, 0, count)
+	unifiedIdx := rec.NextIndex4
+	
+	for i := 0; i < count; i++ {
+		idx := (unifiedIdx + i) % len(allAvailableIPs)
+		selected := allAvailableIPs[idx]
+		result = append(result, struct{IP string; IsV6 bool}{selected.ip, selected.isV6})
+	}
+	
+	// 更新索引：移动到分配的最后一个IP的下一个
+	rec.NextIndex4 = (unifiedIdx + count) % len(allAvailableIPs)
+	
+	p.mu.Unlock()
+	if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
+	return result, nil
 }
 
 // ReportResult 根据返回码更新黑名单。
