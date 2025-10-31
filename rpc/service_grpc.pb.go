@@ -165,3 +165,191 @@ var CrawlerService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "rpc/service.proto",
 }
+
+const (
+	PeerService_ExchangeDNS_FullMethodName = "/rpc.PeerService/ExchangeDNS"
+	PeerService_GetPeers_FullMethodName    = "/rpc.PeerService/GetPeers"
+	PeerService_ReportNode_FullMethodName  = "/rpc.PeerService/ReportNode"
+)
+
+// PeerServiceClient is the client API for PeerService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// 对等节点服务定义
+type PeerServiceClient interface {
+	// 交换DNS记录（共享观测报告）
+	ExchangeDNS(ctx context.Context, in *ExchangeDNSRequest, opts ...grpc.CallOption) (*ExchangeDNSResponse, error)
+	// 获取已知对等节点列表
+	GetPeers(ctx context.Context, in *GetPeersRequest, opts ...grpc.CallOption) (*GetPeersResponse, error)
+	// 上报节点信息（用于发现新节点）
+	ReportNode(ctx context.Context, in *ReportNodeRequest, opts ...grpc.CallOption) (*ReportNodeResponse, error)
+}
+
+type peerServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewPeerServiceClient(cc grpc.ClientConnInterface) PeerServiceClient {
+	return &peerServiceClient{cc}
+}
+
+func (c *peerServiceClient) ExchangeDNS(ctx context.Context, in *ExchangeDNSRequest, opts ...grpc.CallOption) (*ExchangeDNSResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExchangeDNSResponse)
+	err := c.cc.Invoke(ctx, PeerService_ExchangeDNS_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *peerServiceClient) GetPeers(ctx context.Context, in *GetPeersRequest, opts ...grpc.CallOption) (*GetPeersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPeersResponse)
+	err := c.cc.Invoke(ctx, PeerService_GetPeers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *peerServiceClient) ReportNode(ctx context.Context, in *ReportNodeRequest, opts ...grpc.CallOption) (*ReportNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReportNodeResponse)
+	err := c.cc.Invoke(ctx, PeerService_ReportNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// PeerServiceServer is the server API for PeerService service.
+// All implementations must embed UnimplementedPeerServiceServer
+// for forward compatibility.
+//
+// 对等节点服务定义
+type PeerServiceServer interface {
+	// 交换DNS记录（共享观测报告）
+	ExchangeDNS(context.Context, *ExchangeDNSRequest) (*ExchangeDNSResponse, error)
+	// 获取已知对等节点列表
+	GetPeers(context.Context, *GetPeersRequest) (*GetPeersResponse, error)
+	// 上报节点信息（用于发现新节点）
+	ReportNode(context.Context, *ReportNodeRequest) (*ReportNodeResponse, error)
+	mustEmbedUnimplementedPeerServiceServer()
+}
+
+// UnimplementedPeerServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedPeerServiceServer struct{}
+
+func (UnimplementedPeerServiceServer) ExchangeDNS(context.Context, *ExchangeDNSRequest) (*ExchangeDNSResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExchangeDNS not implemented")
+}
+func (UnimplementedPeerServiceServer) GetPeers(context.Context, *GetPeersRequest) (*GetPeersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetPeers not implemented")
+}
+func (UnimplementedPeerServiceServer) ReportNode(context.Context, *ReportNodeRequest) (*ReportNodeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReportNode not implemented")
+}
+func (UnimplementedPeerServiceServer) mustEmbedUnimplementedPeerServiceServer() {}
+func (UnimplementedPeerServiceServer) testEmbeddedByValue()                     {}
+
+// UnsafePeerServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to PeerServiceServer will
+// result in compilation errors.
+type UnsafePeerServiceServer interface {
+	mustEmbedUnimplementedPeerServiceServer()
+}
+
+func RegisterPeerServiceServer(s grpc.ServiceRegistrar, srv PeerServiceServer) {
+	// If the following call pancis, it indicates UnimplementedPeerServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&PeerService_ServiceDesc, srv)
+}
+
+func _PeerService_ExchangeDNS_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExchangeDNSRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PeerServiceServer).ExchangeDNS(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PeerService_ExchangeDNS_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PeerServiceServer).ExchangeDNS(ctx, req.(*ExchangeDNSRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PeerService_GetPeers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPeersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PeerServiceServer).GetPeers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PeerService_GetPeers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PeerServiceServer).GetPeers(ctx, req.(*GetPeersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PeerService_ReportNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PeerServiceServer).ReportNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PeerService_ReportNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PeerServiceServer).ReportNode(ctx, req.(*ReportNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// PeerService_ServiceDesc is the grpc.ServiceDesc for PeerService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var PeerService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "rpc.PeerService",
+	HandlerType: (*PeerServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ExchangeDNS",
+			Handler:    _PeerService_ExchangeDNS_Handler,
+		},
+		{
+			MethodName: "GetPeers",
+			Handler:    _PeerService_GetPeers_Handler,
+		},
+		{
+			MethodName: "ReportNode",
+			Handler:    _PeerService_ReportNode_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "rpc/service.proto",
+}

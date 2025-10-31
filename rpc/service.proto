@@ -11,6 +11,16 @@ service CrawlerService {
   rpc BatchFetch(BatchFetchRequest) returns (BatchFetchResponse);
 }
 
+// 对等节点服务定义
+service PeerService {
+  // 交换DNS记录（共享观测报告）
+  rpc ExchangeDNS(ExchangeDNSRequest) returns (ExchangeDNSResponse);
+  // 获取已知对等节点列表
+  rpc GetPeers(GetPeersRequest) returns (GetPeersResponse);
+  // 上报节点信息（用于发现新节点）
+  rpc ReportNode(ReportNodeRequest) returns (ReportNodeResponse);
+}
+
 // 抓取请求
 message FetchRequest {
   string url = 1;
@@ -48,4 +58,44 @@ enum TLSClientType {
   IOS = 4;
   ANDROID = 5;
   EDGE = 6;
+}
+
+// DNS记录交换请求
+message ExchangeDNSRequest {
+  // 本地的DNS记录（domain -> IPs）
+  map<string, DNSRecord> records = 1;
+}
+
+// DNS记录交换响应
+message ExchangeDNSResponse {
+  // 对等节点返回的DNS记录
+  map<string, DNSRecord> records = 1;
+}
+
+// DNS记录
+message DNSRecord {
+  repeated string ipv4 = 1;
+  repeated string ipv6 = 2;
+  // 仅共享观测报告：不要共享黑名单/白名单
+  map<string, int32> observations = 3;  // IP -> status_code（200/403等）
+}
+
+// 获取对等节点列表请求
+message GetPeersRequest {
+}
+
+// 获取对等节点列表响应
+message GetPeersResponse {
+  repeated string peers = 1;  // 已知的peer地址列表（格式：host:port）
+}
+
+// 上报节点信息请求
+message ReportNodeRequest {
+  string address = 1;  // 本节点地址（host:port）
+}
+
+// 上报节点信息响应
+message ReportNodeResponse {
+  bool accepted = 1;  // 是否接受
+  string message = 2;  // 消息
 }

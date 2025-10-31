@@ -327,6 +327,340 @@ func (x *BatchFetchResponse) GetResponses() []*FetchResponse {
 	return nil
 }
 
+// DNS记录交换请求
+type ExchangeDNSRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 本地的DNS记录（domain -> IPs）
+	Records       map[string]*DNSRecord `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExchangeDNSRequest) Reset() {
+	*x = ExchangeDNSRequest{}
+	mi := &file_rpc_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExchangeDNSRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExchangeDNSRequest) ProtoMessage() {}
+
+func (x *ExchangeDNSRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExchangeDNSRequest.ProtoReflect.Descriptor instead.
+func (*ExchangeDNSRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ExchangeDNSRequest) GetRecords() map[string]*DNSRecord {
+	if x != nil {
+		return x.Records
+	}
+	return nil
+}
+
+// DNS记录交换响应
+type ExchangeDNSResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 对等节点返回的DNS记录
+	Records       map[string]*DNSRecord `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExchangeDNSResponse) Reset() {
+	*x = ExchangeDNSResponse{}
+	mi := &file_rpc_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExchangeDNSResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExchangeDNSResponse) ProtoMessage() {}
+
+func (x *ExchangeDNSResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExchangeDNSResponse.ProtoReflect.Descriptor instead.
+func (*ExchangeDNSResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ExchangeDNSResponse) GetRecords() map[string]*DNSRecord {
+	if x != nil {
+		return x.Records
+	}
+	return nil
+}
+
+// DNS记录
+type DNSRecord struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Ipv4  []string               `protobuf:"bytes,1,rep,name=ipv4,proto3" json:"ipv4,omitempty"`
+	Ipv6  []string               `protobuf:"bytes,2,rep,name=ipv6,proto3" json:"ipv6,omitempty"`
+	// 仅共享观测报告：不要共享黑名单/白名单
+	Observations  map[string]int32 `protobuf:"bytes,3,rep,name=observations,proto3" json:"observations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // IP -> status_code（200/403等）
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DNSRecord) Reset() {
+	*x = DNSRecord{}
+	mi := &file_rpc_service_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DNSRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DNSRecord) ProtoMessage() {}
+
+func (x *DNSRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_service_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DNSRecord.ProtoReflect.Descriptor instead.
+func (*DNSRecord) Descriptor() ([]byte, []int) {
+	return file_rpc_service_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *DNSRecord) GetIpv4() []string {
+	if x != nil {
+		return x.Ipv4
+	}
+	return nil
+}
+
+func (x *DNSRecord) GetIpv6() []string {
+	if x != nil {
+		return x.Ipv6
+	}
+	return nil
+}
+
+func (x *DNSRecord) GetObservations() map[string]int32 {
+	if x != nil {
+		return x.Observations
+	}
+	return nil
+}
+
+// 获取对等节点列表请求
+type GetPeersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPeersRequest) Reset() {
+	*x = GetPeersRequest{}
+	mi := &file_rpc_service_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPeersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPeersRequest) ProtoMessage() {}
+
+func (x *GetPeersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_service_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPeersRequest.ProtoReflect.Descriptor instead.
+func (*GetPeersRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_service_proto_rawDescGZIP(), []int{7}
+}
+
+// 获取对等节点列表响应
+type GetPeersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Peers         []string               `protobuf:"bytes,1,rep,name=peers,proto3" json:"peers,omitempty"` // 已知的peer地址列表（格式：host:port）
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPeersResponse) Reset() {
+	*x = GetPeersResponse{}
+	mi := &file_rpc_service_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPeersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPeersResponse) ProtoMessage() {}
+
+func (x *GetPeersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_service_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPeersResponse.ProtoReflect.Descriptor instead.
+func (*GetPeersResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_service_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GetPeersResponse) GetPeers() []string {
+	if x != nil {
+		return x.Peers
+	}
+	return nil
+}
+
+// 上报节点信息请求
+type ReportNodeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Address       string                 `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"` // 本节点地址（host:port）
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportNodeRequest) Reset() {
+	*x = ReportNodeRequest{}
+	mi := &file_rpc_service_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportNodeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportNodeRequest) ProtoMessage() {}
+
+func (x *ReportNodeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_service_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportNodeRequest.ProtoReflect.Descriptor instead.
+func (*ReportNodeRequest) Descriptor() ([]byte, []int) {
+	return file_rpc_service_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ReportNodeRequest) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+// 上报节点信息响应
+type ReportNodeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"` // 是否接受
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`    // 消息
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportNodeResponse) Reset() {
+	*x = ReportNodeResponse{}
+	mi := &file_rpc_service_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportNodeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportNodeResponse) ProtoMessage() {}
+
+func (x *ReportNodeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rpc_service_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportNodeResponse.ProtoReflect.Descriptor instead.
+func (*ReportNodeResponse) Descriptor() ([]byte, []int) {
+	return file_rpc_service_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ReportNodeResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *ReportNodeResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 var File_rpc_service_proto protoreflect.FileDescriptor
 
 const file_rpc_service_proto_rawDesc = "" +
@@ -356,7 +690,32 @@ const file_rpc_service_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"F\n" +
 	"\x12BatchFetchResponse\x120\n" +
-	"\tresponses\x18\x01 \x03(\v2\x12.rpc.FetchResponseR\tresponses*a\n" +
+	"\tresponses\x18\x01 \x03(\v2\x12.rpc.FetchResponseR\tresponses\"\xa0\x01\n" +
+	"\x12ExchangeDNSRequest\x12>\n" +
+	"\arecords\x18\x01 \x03(\v2$.rpc.ExchangeDNSRequest.RecordsEntryR\arecords\x1aJ\n" +
+	"\fRecordsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12$\n" +
+	"\x05value\x18\x02 \x01(\v2\x0e.rpc.DNSRecordR\x05value:\x028\x01\"\xa2\x01\n" +
+	"\x13ExchangeDNSResponse\x12?\n" +
+	"\arecords\x18\x01 \x03(\v2%.rpc.ExchangeDNSResponse.RecordsEntryR\arecords\x1aJ\n" +
+	"\fRecordsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12$\n" +
+	"\x05value\x18\x02 \x01(\v2\x0e.rpc.DNSRecordR\x05value:\x028\x01\"\xba\x01\n" +
+	"\tDNSRecord\x12\x12\n" +
+	"\x04ipv4\x18\x01 \x03(\tR\x04ipv4\x12\x12\n" +
+	"\x04ipv6\x18\x02 \x03(\tR\x04ipv6\x12D\n" +
+	"\fobservations\x18\x03 \x03(\v2 .rpc.DNSRecord.ObservationsEntryR\fobservations\x1a?\n" +
+	"\x11ObservationsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"\x11\n" +
+	"\x0fGetPeersRequest\"(\n" +
+	"\x10GetPeersResponse\x12\x14\n" +
+	"\x05peers\x18\x01 \x03(\tR\x05peers\"-\n" +
+	"\x11ReportNodeRequest\x12\x18\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\"J\n" +
+	"\x12ReportNodeResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage*a\n" +
 	"\rTLSClientType\x12\v\n" +
 	"\aDEFAULT\x10\x00\x12\n" +
 	"\n" +
@@ -370,7 +729,12 @@ const file_rpc_service_proto_rawDesc = "" +
 	"\x0eCrawlerService\x12.\n" +
 	"\x05Fetch\x12\x11.rpc.FetchRequest\x1a\x12.rpc.FetchResponse\x12=\n" +
 	"\n" +
-	"BatchFetch\x12\x16.rpc.BatchFetchRequest\x1a\x17.rpc.BatchFetchResponseB\aZ\x05./rpcb\x06proto3"
+	"BatchFetch\x12\x16.rpc.BatchFetchRequest\x1a\x17.rpc.BatchFetchResponse2\xc7\x01\n" +
+	"\vPeerService\x12@\n" +
+	"\vExchangeDNS\x12\x17.rpc.ExchangeDNSRequest\x1a\x18.rpc.ExchangeDNSResponse\x127\n" +
+	"\bGetPeers\x12\x14.rpc.GetPeersRequest\x1a\x15.rpc.GetPeersResponse\x12=\n" +
+	"\n" +
+	"ReportNode\x12\x16.rpc.ReportNodeRequest\x1a\x17.rpc.ReportNodeResponseB\aZ\x05./rpcb\x06proto3"
 
 var (
 	file_rpc_service_proto_rawDescOnce sync.Once
@@ -385,31 +749,52 @@ func file_rpc_service_proto_rawDescGZIP() []byte {
 }
 
 var file_rpc_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_rpc_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_rpc_service_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_rpc_service_proto_goTypes = []any{
-	(TLSClientType)(0),         // 0: rpc.TLSClientType
-	(*FetchRequest)(nil),       // 1: rpc.FetchRequest
-	(*BatchFetchRequest)(nil),  // 2: rpc.BatchFetchRequest
-	(*FetchResponse)(nil),      // 3: rpc.FetchResponse
-	(*BatchFetchResponse)(nil), // 4: rpc.BatchFetchResponse
-	nil,                        // 5: rpc.FetchRequest.HeadersEntry
-	nil,                        // 6: rpc.FetchResponse.HeadersEntry
+	(TLSClientType)(0),          // 0: rpc.TLSClientType
+	(*FetchRequest)(nil),        // 1: rpc.FetchRequest
+	(*BatchFetchRequest)(nil),   // 2: rpc.BatchFetchRequest
+	(*FetchResponse)(nil),       // 3: rpc.FetchResponse
+	(*BatchFetchResponse)(nil),  // 4: rpc.BatchFetchResponse
+	(*ExchangeDNSRequest)(nil),  // 5: rpc.ExchangeDNSRequest
+	(*ExchangeDNSResponse)(nil), // 6: rpc.ExchangeDNSResponse
+	(*DNSRecord)(nil),           // 7: rpc.DNSRecord
+	(*GetPeersRequest)(nil),     // 8: rpc.GetPeersRequest
+	(*GetPeersResponse)(nil),    // 9: rpc.GetPeersResponse
+	(*ReportNodeRequest)(nil),   // 10: rpc.ReportNodeRequest
+	(*ReportNodeResponse)(nil),  // 11: rpc.ReportNodeResponse
+	nil,                         // 12: rpc.FetchRequest.HeadersEntry
+	nil,                         // 13: rpc.FetchResponse.HeadersEntry
+	nil,                         // 14: rpc.ExchangeDNSRequest.RecordsEntry
+	nil,                         // 15: rpc.ExchangeDNSResponse.RecordsEntry
+	nil,                         // 16: rpc.DNSRecord.ObservationsEntry
 }
 var file_rpc_service_proto_depIdxs = []int32{
-	5, // 0: rpc.FetchRequest.headers:type_name -> rpc.FetchRequest.HeadersEntry
-	0, // 1: rpc.FetchRequest.tls_client:type_name -> rpc.TLSClientType
-	1, // 2: rpc.BatchFetchRequest.requests:type_name -> rpc.FetchRequest
-	6, // 3: rpc.FetchResponse.headers:type_name -> rpc.FetchResponse.HeadersEntry
-	3, // 4: rpc.BatchFetchResponse.responses:type_name -> rpc.FetchResponse
-	1, // 5: rpc.CrawlerService.Fetch:input_type -> rpc.FetchRequest
-	2, // 6: rpc.CrawlerService.BatchFetch:input_type -> rpc.BatchFetchRequest
-	3, // 7: rpc.CrawlerService.Fetch:output_type -> rpc.FetchResponse
-	4, // 8: rpc.CrawlerService.BatchFetch:output_type -> rpc.BatchFetchResponse
-	7, // [7:9] is the sub-list for method output_type
-	5, // [5:7] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	12, // 0: rpc.FetchRequest.headers:type_name -> rpc.FetchRequest.HeadersEntry
+	0,  // 1: rpc.FetchRequest.tls_client:type_name -> rpc.TLSClientType
+	1,  // 2: rpc.BatchFetchRequest.requests:type_name -> rpc.FetchRequest
+	13, // 3: rpc.FetchResponse.headers:type_name -> rpc.FetchResponse.HeadersEntry
+	3,  // 4: rpc.BatchFetchResponse.responses:type_name -> rpc.FetchResponse
+	14, // 5: rpc.ExchangeDNSRequest.records:type_name -> rpc.ExchangeDNSRequest.RecordsEntry
+	15, // 6: rpc.ExchangeDNSResponse.records:type_name -> rpc.ExchangeDNSResponse.RecordsEntry
+	16, // 7: rpc.DNSRecord.observations:type_name -> rpc.DNSRecord.ObservationsEntry
+	7,  // 8: rpc.ExchangeDNSRequest.RecordsEntry.value:type_name -> rpc.DNSRecord
+	7,  // 9: rpc.ExchangeDNSResponse.RecordsEntry.value:type_name -> rpc.DNSRecord
+	1,  // 10: rpc.CrawlerService.Fetch:input_type -> rpc.FetchRequest
+	2,  // 11: rpc.CrawlerService.BatchFetch:input_type -> rpc.BatchFetchRequest
+	5,  // 12: rpc.PeerService.ExchangeDNS:input_type -> rpc.ExchangeDNSRequest
+	8,  // 13: rpc.PeerService.GetPeers:input_type -> rpc.GetPeersRequest
+	10, // 14: rpc.PeerService.ReportNode:input_type -> rpc.ReportNodeRequest
+	3,  // 15: rpc.CrawlerService.Fetch:output_type -> rpc.FetchResponse
+	4,  // 16: rpc.CrawlerService.BatchFetch:output_type -> rpc.BatchFetchResponse
+	6,  // 17: rpc.PeerService.ExchangeDNS:output_type -> rpc.ExchangeDNSResponse
+	9,  // 18: rpc.PeerService.GetPeers:output_type -> rpc.GetPeersResponse
+	11, // 19: rpc.PeerService.ReportNode:output_type -> rpc.ReportNodeResponse
+	15, // [15:20] is the sub-list for method output_type
+	10, // [10:15] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_rpc_service_proto_init() }
@@ -423,9 +808,9 @@ func file_rpc_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rpc_service_proto_rawDesc), len(file_rpc_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   6,
+			NumMessages:   16,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   2,
 		},
 		GoTypes:           file_rpc_service_proto_goTypes,
 		DependencyIndexes: file_rpc_service_proto_depIdxs,
