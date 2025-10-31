@@ -69,6 +69,8 @@ type CrawlerConfig struct {
 	UserAgent string `toml:"user_agent"`
 	// DefaultHeaders 默认请求头（可在外部配置覆盖）
 	DefaultHeaders map[string]string `toml:"default_headers"`
+    // DedupeWindow 去重窗口（相同域名+IP在窗口内不重复抓取），如 "60s"
+    DedupeWindow string `toml:"dedupe_window"`
 }
 
 // DNSConfig DNS池配置

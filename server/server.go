@@ -54,7 +54,9 @@ type CrawlerServer struct {
 	// 确保即使我们没有实现所有方法，代码也能正常编译
 	rpc.UnimplementedCrawlerServiceServer
 	// stats 统计收集器
-	stats *StatsCollector
+    stats *StatsCollector
+    // recent 最近抓取去重：key=域名+"+"+IP，value=上次时间
+    recent sync.Map
 }
 
 // NewCrawlerServer 创建新的爬虫服务器实例
@@ -91,8 +93,29 @@ func (s *CrawlerServer) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.
 	// 记录RPC请求到达时间（用于计算端到端延迟）
 	rpcStartTime := time.Now()
 	
-	// 记录抓取日志，包含目标URL
-	log.Printf("正在抓取 URL: %s", req.Url)
+    // 记录抓取日志，包含目标URL
+    log.Printf("正在抓取 URL: %s", req.Url)
+
+    // 去重窗口（URL级）：窗口内相同URL不重复抓取
+    var dedupeWindow time.Duration
+    if w := config.AppConfig.Crawler.DedupeWindow; w != "" {
+        if d, err := time.ParseDuration(w); err == nil && d > 0 {
+            dedupeWindow = d
+        }
+    }
+    if dedupeWindow > 0 {
+        if v, ok := s.recent.Load(req.Url); ok {
+            if last, ok2 := v.(time.Time); ok2 {
+                if time.Since(last) < dedupeWindow {
+                    return &rpc.FetchResponse{
+                        Url:        req.Url,
+                        StatusCode: 204,
+                        Headers:    map[string]string{"X-Dedup": "true"},
+                    }, nil
+                }
+            }
+        }
+    }
 
     // 设置User-Agent：优先使用配置默认UA；如未配置则随机选择
     if req.UserAgent == "" {
@@ -130,9 +153,14 @@ func (s *CrawlerServer) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.
 	// 计算总延迟时间（RPC请求处理总时间）
 	rpcTotalLatency := time.Since(rpcStartTime)
 
-	// 记录详细耗时日志（包含HTTP抓取和RPC总时间）
+    // 记录详细耗时日志（包含HTTP抓取和RPC总时间）
 	log.Printf("抓取完成 URL: %s, HTTP抓取: %v, RPC总耗时: %v (RPC传输: %v)", 
 		req.Url, httpFetchLatency, rpcTotalLatency, rpcTotalLatency-httpFetchLatency)
+
+    // 记录此次时间用于去重
+    if dedupeWindow > 0 && err == nil {
+        s.recent.Store(req.Url, time.Now())
+    }
 
 	// 记录统计信息（使用HTTP抓取时间作为主要指标）
 	if s.stats != nil {
