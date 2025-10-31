@@ -208,6 +208,18 @@ func PrewarmConnections(ctx context.Context) {
 	})
 }
 
+// isProtocolError 检查错误是否是协议错误（如HEAD请求返回数据）
+// 这类错误不影响连接建立，可以安全忽略
+func isProtocolError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return errStr == "protocol error: received DATA on a HEAD request" ||
+		errStr == "http2: received DATA on a HEAD request" ||
+		strings.Contains(errStr, "received DATA on a HEAD request")
+}
+
 // PrewarmSingleConnection 为单个IP预建连接（当发现新IP时调用）
 // 用于在运行时动态预热新发现的IP，保持连接池始终是热的
 func PrewarmSingleConnection(ctx context.Context, domain, address string) {
