@@ -159,21 +159,45 @@ func PrewarmConnections(ctx context.Context) {
 					resp, err := h2c.Do(req)
 					cancel()
 
-					if err == nil && resp != nil {
-						resp.Body.Close() // 关闭响应体
-						// 连接建立成功，缓存到全局预建池
-						globalPrewarmMu.Lock()
-						globalPrewarmedH2Clients[key] = h2c
-						globalPrewarmMu.Unlock()
-						countMu.Lock()
-						successCount++
-						countMu.Unlock()
-						log.Printf("[prewarm] ✓ %s -> %s", d, a)
+					// 忽略HEAD请求可能返回数据的协议错误（某些服务器不规范实现）
+					// HTTP/2规范要求HEAD请求不应有数据，但某些服务器会返回数据
+					// 这个错误不影响连接建立，可以安全忽略
+					if resp != nil {
+						_ = resp.Body.Close() // 关闭响应体（即使有错误也忽略）
+					}
+
+					// 检查是否成功（忽略协议错误，只要连接建立即可）
+					if err == nil || (err != nil && !isProtocolError(err)) {
+						if resp != nil {
+							// 连接建立成功，缓存到全局预建池
+							globalPrewarmMu.Lock()
+							globalPrewarmedH2Clients[key] = h2c
+							globalPrewarmMu.Unlock()
+							countMu.Lock()
+							successCount++
+							countMu.Unlock()
+							log.Printf("[prewarm] ✓ %s -> %s", d, a)
+						} else {
+							// 连接失败，但不影响后续使用（后续请求时会重新建立）
+							countMu.Lock()
+							failCount++
+							countMu.Unlock()
+						}
 					} else {
-						// 连接失败，但不影响后续使用（后续请求时会重新建立）
-						countMu.Lock()
-						failCount++
-						countMu.Unlock()
+						// 协议错误（如HEAD请求返回数据），但连接已建立，视为成功
+						if resp != nil {
+							globalPrewarmMu.Lock()
+							globalPrewarmedH2Clients[key] = h2c
+							globalPrewarmMu.Unlock()
+							countMu.Lock()
+							successCount++
+							countMu.Unlock()
+							log.Printf("[prewarm] ✓ %s -> %s", d, a)
+						} else {
+							countMu.Lock()
+							failCount++
+							countMu.Unlock()
+						}
 					}
 				}(domain, addr)
 			}
@@ -227,9 +251,24 @@ func PrewarmSingleConnection(ctx context.Context, domain, address string) {
 	resp, err := h2c.Do(req)
 	cancel()
 
-	if err == nil && resp != nil {
-		resp.Body.Close()
-		// 连接建立成功，加入全局预建池
+	// 忽略HEAD请求可能返回数据的协议错误（某些服务器不规范实现）
+	// HTTP/2规范要求HEAD请求不应有数据，但某些服务器会返回数据
+	// 这个错误不影响连接建立，可以安全忽略
+	if resp != nil {
+		_ = resp.Body.Close() // 关闭响应体（即使有错误也忽略）
+	}
+
+	// 检查是否成功（忽略协议错误，只要连接建立即可）
+	if err == nil || (err != nil && !isProtocolError(err)) {
+		if resp != nil {
+			// 连接建立成功，加入全局预建池
+			globalPrewarmMu.Lock()
+			globalPrewarmedH2Clients[key] = h2c
+			globalPrewarmMu.Unlock()
+			log.Printf("[prewarm] ✓ 新IP预热成功: %s -> %s", domain, address)
+		}
+	} else if isProtocolError(err) && resp != nil {
+		// 协议错误（如HEAD请求返回数据），但连接已建立，视为成功
 		globalPrewarmMu.Lock()
 		globalPrewarmedH2Clients[key] = h2c
 		globalPrewarmMu.Unlock()
