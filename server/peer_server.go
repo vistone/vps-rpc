@@ -26,6 +26,20 @@ func NewPeerServiceServer(dnsPool *proxy.DNSPool) *PeerServiceServer {
 	}
 }
 
+// AddKnownPeer 将地址加入已知节点（去重）
+func (s *PeerServiceServer) AddKnownPeer(address string) {
+    if address == "" {
+        return
+    }
+    if s.knownPeers == nil {
+        s.knownPeers = make(map[string]bool)
+    }
+    if !s.knownPeers[address] {
+        s.knownPeers[address] = true
+        log.Printf("[peer] 学到对端节点: %s", address)
+    }
+}
+
 // ExchangeDNS 交换DNS记录（共享观测报告）
 func (s *PeerServiceServer) ExchangeDNS(ctx context.Context, req *rpc.ExchangeDNSRequest) (*rpc.ExchangeDNSResponse, error) {
 	if s.dnsPool == nil {

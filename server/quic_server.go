@@ -183,6 +183,15 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 		// ExchangeDNSRequest: 有records字段
         var exchangeDNSReq rpc.ExchangeDNSRequest
         if err := proto.Unmarshal(msgData, &exchangeDNSReq); err == nil {
+            // 学到对端地址
+            if conn != nil {
+                if ps, ok := s.peerServer.(*PeerServiceServer); ok {
+                    rhost, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+                    if rhost != "" {
+                        ps.AddKnownPeer(net.JoinHostPort(rhost, fmt.Sprintf("%d", config.AppConfig.Server.Port)))
+                    }
+                }
+            }
 			resp, err := s.peerServer.ExchangeDNS(ctx, &exchangeDNSReq)
 			if err != nil {
 				log.Printf("ExchangeDNS失败: %v", err)
@@ -196,8 +205,17 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
             log.Printf("[quic-rpc] ExchangeDNS: 本地=%d, 远程=%d", len(exchangeDNSReq.Records), len(resp.Records))
 		} else {
 			// GetPeersRequest: 空消息
-			var getPeersReq rpc.GetPeersRequest
+            var getPeersReq rpc.GetPeersRequest
 			if err := proto.Unmarshal(msgData, &getPeersReq); err == nil {
+                // 学到对端地址
+                if conn != nil {
+                    if ps, ok := s.peerServer.(*PeerServiceServer); ok {
+                        rhost, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+                        if rhost != "" {
+                            ps.AddKnownPeer(net.JoinHostPort(rhost, fmt.Sprintf("%d", config.AppConfig.Server.Port)))
+                        }
+                    }
+                }
 				resp, err := s.peerServer.GetPeers(ctx, &getPeersReq)
 				if err != nil {
 					log.Printf("GetPeers失败: %v", err)
