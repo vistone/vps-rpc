@@ -376,11 +376,14 @@ func (c *UTLSClient) getClientHelloID() *utls.ClientHelloID {
 // dialUTLS 使用 uTLS 完成 TLS 握手并返回连接
 func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName string, helloID *utls.ClientHelloID, nextProtos []string) (net.Conn, error) {
 	d := &net.Dialer{Timeout: c.config.Timeout}
-	// 无论目标是IPv4还是IPv6，都从本机IPv6池轮询一个源地址进行绑定
-	// 这样可以充分利用系统的多个IPv6地址进行负载分散
-	// 注意：不打印日志以避免高并发时的性能问题
-	if src := NextIPv6LocalAddr(); src != nil {
-		d.LocalAddr = &net.TCPAddr{IP: src}
+	// 只有在目标是IPv6地址时，才从本机IPv6池轮询一个源地址进行绑定
+	// IPv4目标不应该绑定IPv6源地址，否则会导致路由问题
+	host, _, _ := net.SplitHostPort(address)
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		// 目标是IPv6地址，轮询使用本机IPv6源地址进行负载分散
+		if src := NextIPv6LocalAddr(); src != nil {
+			d.LocalAddr = &net.TCPAddr{IP: src}
+		}
 	}
 	tcpConn, err := d.DialContext(ctx, network, address)
 	if err != nil {
