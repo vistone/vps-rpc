@@ -300,6 +300,14 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
         if pm := GetGlobalProbeManager(); pm != nil {
             pm.RegisterDomain(host)
         }
+        // 若池内总IP数 < 2，先做一次强化探测以丰富池子
+        if v4a, v6a, e := c.dns.GetIPs(timeoutCtx, host); e == nil {
+            if len(v4a)+len(v6a) < 2 {
+                ctx2, cancel2 := context.WithTimeout(timeoutCtx, 2*time.Second)
+                _, _ = c.dns.resolveAndStore(ctx2, host)
+                cancel2()
+            }
+        }
         // 双栈并行：若同时存在v4与v6，各挑一个并发请求，先返回者为准
         if v4s, v6s, e := c.dns.GetIPs(timeoutCtx, host); e == nil && (len(v4s) > 0 || len(v6s) > 0) {
             // 计算端口
