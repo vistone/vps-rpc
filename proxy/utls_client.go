@@ -29,10 +29,10 @@ type UTLSClient struct {
 	config *UTLSConfig
 	// dns DNS 池实例（可选）
 	dns *DNSPool
-    // 连接复用：按 host 缓存 http.Client（h2/h1 分开）
-    mu        sync.Mutex
-    h2Clients map[string]*http.Client
-    h1Clients map[string]*http.Client
+	// 连接复用：按 host 缓存 http.Client（h2/h1 分开）
+	mu        sync.Mutex
+	h2Clients map[string]*http.Client
+	h1Clients map[string]*http.Client
 }
 
 // UTLSConfig 是uTLS客户端配置
@@ -62,7 +62,7 @@ func NewUTLSClient(cfg *UTLSConfig) *UTLSClient {
 		cfg.Timeout = 30 * time.Second
 	}
 
-    client := &UTLSClient{config: cfg, h2Clients: map[string]*http.Client{}, h1Clients: map[string]*http.Client{}}
+	client := &UTLSClient{config: cfg, h2Clients: map[string]*http.Client{}, h1Clients: map[string]*http.Client{}}
 	// 复用全局DNS池
 	if gp := GetGlobalDNSPool(); gp != nil {
 		client.dns = gp
@@ -176,13 +176,13 @@ func (c *UTLSClient) getClientHelloID() *utls.ClientHelloID {
 // dialUTLS 使用 uTLS 完成 TLS 握手并返回连接
 func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName string, helloID *utls.ClientHelloID, nextProtos []string) (net.Conn, error) {
 	d := &net.Dialer{Timeout: c.config.Timeout}
-    // 若目标是IPv6地址，从本机IPv6池轮询一个源地址进行绑定（如有）
+	// 若目标是IPv6地址，从本机IPv6池轮询一个源地址进行绑定（如有）
 	host, _, _ := net.SplitHostPort(address)
 	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-        if src := NextIPv6LocalAddr(); src != nil {
-            d.LocalAddr = &net.TCPAddr{IP: src}
-            log.Printf("[route] bind_src_ipv6=%s target_host=%s", src.String(), serverName)
-        }
+		if src := NextIPv6LocalAddr(); src != nil {
+			d.LocalAddr = &net.TCPAddr{IP: src}
+			log.Printf("[route] bind_src_ipv6=%s target_host=%s", src.String(), serverName)
+		}
 	}
 	tcpConn, err := d.DialContext(ctx, network, address)
 	if err != nil {
@@ -195,78 +195,78 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName 
 	if len(nextProtos) > 0 {
 		ucfg.NextProtos = nextProtos
 	}
-    uconn := utls.UClient(tcpConn, ucfg, *helloID)
+	uconn := utls.UClient(tcpConn, ucfg, *helloID)
 	if err := uconn.HandshakeContext(ctx); err != nil {
 		tcpConn.Close()
 		return nil, fmt.Errorf("握手失败: %w", err)
 	}
-    // 将实际连接到的远端IP加入DNS池（即便本次是域名拨号）
-    if c.dns != nil && serverName != "" {
-        if ra, ok := tcpConn.RemoteAddr().(*net.TCPAddr); ok && ra != nil && ra.IP != nil {
-            _ = c.dns.ReportResult(serverName, ra.IP.String(), 200)
-        }
-    }
+	// 将实际连接到的远端IP加入DNS池（即便本次是域名拨号）
+	if c.dns != nil && serverName != "" {
+		if ra, ok := tcpConn.RemoteAddr().(*net.TCPAddr); ok && ra != nil && ra.IP != nil {
+			_ = c.dns.ReportResult(serverName, ra.IP.String(), 200)
+		}
+	}
 	return uconn, nil
 }
 
 // buildHTTP2Client 基于 http2.Transport + uTLS 的 http.Client
 // 优化：启用连接复用和更长的空闲超时以最大化复用
 func (c *UTLSClient) buildHTTP2Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
-    tr := &http2.Transport{
-        DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-            return c.dialUTLS(ctx, network, address, host, helloID, []string{"h2"})
-        },
-        ReadIdleTimeout:  30 * time.Second, // 连接空闲超时
-        PingTimeout:      15 * time.Second, // Ping超时
-        WriteByteTimeout: 10 * time.Second, // 写入超时
-        MaxReadFrameSize: 1 << 20,           // 1MB最大帧大小
-        AllowHTTP:        false,
-    }
-    return &http.Client{
-        Timeout:   c.config.Timeout,
-        Transport: tr,
-    }
+	tr := &http2.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			return c.dialUTLS(ctx, network, address, host, helloID, []string{"h2"})
+		},
+		ReadIdleTimeout:  30 * time.Second, // 连接空闲超时
+		PingTimeout:      15 * time.Second, // Ping超时
+		WriteByteTimeout: 10 * time.Second, // 写入超时
+		MaxReadFrameSize: 1 << 20,          // 1MB最大帧大小
+		AllowHTTP:        false,
+	}
+	return &http.Client{
+		Timeout:   c.config.Timeout,
+		Transport: tr,
+	}
 }
 
 // buildHTTP1Client 基于 http.Transport + uTLS 的 http.Client（HTTP/1.1）
 func (c *UTLSClient) buildHTTP1Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
-    tr := &http.Transport{
-        DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-            return c.dialUTLS(ctx, network, address, host, helloID, []string{"http/1.1"})
-        },
-        TLSHandshakeTimeout:   c.config.Timeout,
-        ForceAttemptHTTP2:     false,
-        MaxIdleConns:          100,
-        MaxIdleConnsPerHost:   10,
-        IdleConnTimeout:       60 * time.Second,
-        DisableKeepAlives:     false,
-        ResponseHeaderTimeout: c.config.Timeout,
-    }
-    return &http.Client{Timeout: c.config.Timeout, Transport: tr}
+	tr := &http.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return c.dialUTLS(ctx, network, address, host, helloID, []string{"http/1.1"})
+		},
+		TLSHandshakeTimeout:   c.config.Timeout,
+		ForceAttemptHTTP2:     false,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       60 * time.Second,
+		DisableKeepAlives:     false,
+		ResponseHeaderTimeout: c.config.Timeout,
+	}
+	return &http.Client{Timeout: c.config.Timeout, Transport: tr}
 }
 
 // 获取/创建可复用的 h2 客户端
 func (c *UTLSClient) getOrCreateH2Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
-    c.mu.Lock()
-    defer c.mu.Unlock()
-    if cli, ok := c.h2Clients[host]; ok && cli != nil {
-        return cli
-    }
-    cli := c.buildHTTP2Client(host, address, helloID)
-    c.h2Clients[host] = cli
-    return cli
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cli, ok := c.h2Clients[host]; ok && cli != nil {
+		return cli
+	}
+	cli := c.buildHTTP2Client(host, address, helloID)
+	c.h2Clients[host] = cli
+	return cli
 }
 
 // 获取/创建可复用的 h1 客户端
 func (c *UTLSClient) getOrCreateH1Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
-    c.mu.Lock()
-    defer c.mu.Unlock()
-    if cli, ok := c.h1Clients[host]; ok && cli != nil {
-        return cli
-    }
-    cli := c.buildHTTP1Client(host, address, helloID)
-    c.h1Clients[host] = cli
-    return cli
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cli, ok := c.h1Clients[host]; ok && cli != nil {
+		return cli
+	}
+	cli := c.buildHTTP1Client(host, address, helloID)
+	c.h1Clients[host] = cli
+	return cli
 }
 
 // Fetch 发起HTTP请求
@@ -285,120 +285,179 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 	timeoutCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
 	defer cancel()
 
-    // 解析目标
+	// 解析目标
 	host := extractHost(req.Url)
 	addr := extractHostPort(req.Url)
 	if host == "" || addr == "" {
 		return nil, fmt.Errorf("URL 解析失败")
 	}
 
+	// 无条件解析 A/AAAA 并将所有解析到的 IP 追加入 JSON（去重，由 ReportResult 保障）
+	if c.dns != nil {
+		resCtx, resCancel := context.WithTimeout(timeoutCtx, 500*time.Millisecond)
+		defer resCancel()
+		resolver := &net.Resolver{}
+		if ips4, err := resolver.LookupIP(resCtx, "ip4", host); err == nil {
+			for _, ip := range ips4 {
+				_ = c.dns.ReportResult(host, ip.String(), 200)
+			}
+		}
+		if ips6, err := resolver.LookupIP(resCtx, "ip6", host); err == nil {
+			for _, ip := range ips6 {
+				_ = c.dns.ReportResult(host, ip.String(), 200)
+			}
+		}
+	}
+
 	// 若启用DNS池，选择一个直连IP作为目标地址（保持 SNI/Host 为原域名）
-    var selectedIP string
-    var selectedIsV6 bool
-    if c.dns != nil {
-        // 自动注册域名到ProbeManager进行定期探测
-        if pm := GetGlobalProbeManager(); pm != nil {
-            pm.RegisterDomain(host)
-        }
-        // 若池内总IP数 < 2，先做一次强化探测以丰富池子
-        if v4a, v6a, e := c.dns.GetIPs(timeoutCtx, host); e == nil {
-            if len(v4a)+len(v6a) < 2 {
-                ctx2, cancel2 := context.WithTimeout(timeoutCtx, 2*time.Second)
-                _, _ = c.dns.resolveAndStore(ctx2, host)
-                cancel2()
-            }
-        }
-        // 双栈并行：若同时存在v4与v6，各挑一个并发请求，先返回者为准
-        if v4s, v6s, e := c.dns.GetIPs(timeoutCtx, host); e == nil && (len(v4s) > 0 || len(v6s) > 0) {
-            // 计算端口
-            parsed, _ := url.Parse(req.Url)
-            port := "443"
-            if parsed != nil && parsed.Scheme == "http" {
-                port = "80"
-            }
-            // 候选目标
-            var addrV4, addrV6 string
-            if len(v4s) > 0 { addrV4 = net.JoinHostPort(v4s[0], port) }
-            if len(v6s) > 0 { addrV6 = net.JoinHostPort(v6s[0], port) }
-            // 若同时存在两族，则并发；否则走单一路径
-            if addrV4 != "" && addrV6 != "" {
-                type result struct{ resp *rpc.FetchResponse; ip string; isV6 bool; err error }
-                resCh := make(chan result, 2)
-                // 复制请求以便并发使用独立ctx
-                mkReq := func() (*http.Request, error) {
-                    r2, e2 := http.NewRequestWithContext(timeoutCtx, "GET", req.Url, nil)
-                    if e2 != nil { return nil, e2 }
-                    if len(configPkg.AppConfig.Crawler.DefaultHeaders) > 0 {
-                        for k, v := range configPkg.AppConfig.Crawler.DefaultHeaders {
-                            if r2.Header.Get(k) == "" { r2.Header.Set(k, v) }
-                        }
-                    }
-                    for k, v := range req.Headers { r2.Header.Set(k, v) }
-                    r2.Header.Set("User-Agent", selectUserAgentByTLSClient(req.TlsClient))
-                    return r2, nil
-                }
-                chid := c.getClientHelloID()
-                // 发起函数
-                doOnce := func(targetAddr string, ip string, isV6 bool) {
-                    r2, e2 := mkReq()
-                    if e2 != nil { resCh <- result{nil, ip, isV6, e2}; return }
-                    if ip != "" { r2.Host = host }
-                    // h2
-                    h2c := c.getOrCreateH2Client(host, targetAddr, chid)
-                    st := time.Now()
-                    if resp, e := h2c.Do(r2); e == nil {
-                        defer resp.Body.Close()
-                        body, _ := io.ReadAll(resp.Body)
-                        headers := map[string]string{}
-                        for k, v := range resp.Header { if len(v) > 0 { headers[k] = v[0] } }
-                        if c.dns != nil && ip != "" { _ = c.dns.ReportResult(host, ip, resp.StatusCode); _ = c.dns.ReportLatency(host, ip, time.Since(st).Milliseconds()) }
-                        resCh <- result{&rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, ip, isV6, nil}; return
-                    }
-                    // h1 回退
-                    h1c := c.getOrCreateH1Client(host, targetAddr, chid)
-                    st = time.Now()
-                    if resp, e := h1c.Do(r2); e == nil {
-                        defer resp.Body.Close()
-                        body, _ := io.ReadAll(resp.Body)
-                        headers := map[string]string{}
-                        for k, v := range resp.Header { if len(v) > 0 { headers[k] = v[0] } }
-                        if c.dns != nil && ip != "" { _ = c.dns.ReportResult(host, ip, resp.StatusCode); _ = c.dns.ReportLatency(host, ip, time.Since(st).Milliseconds()) }
-                        resCh <- result{&rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, ip, isV6, nil}; return
-                    }
-                    resCh <- result{nil, ip, isV6, fmt.Errorf("both h2/h1 failed")}
-                }
-                go doOnce(addrV6, v6s[0], true)
-                go doOnce(addrV4, v4s[0], false)
-                // 先到先得
-                r := <-resCh
-                if r.err == nil && r.resp != nil {
-                    return r.resp, nil
-                }
-                r2 := <-resCh
-                if r2.err == nil && r2.resp != nil {
-                    return r2.resp, nil
-                }
-                // 并发都失败则继续走原单路逻辑（下面会处理）
-            }
-            // 单一路径（只有一种族）
-            if addrV6 != "" { selectedIP, selectedIsV6, addr = v6s[0], true, addrV6 }
-            if addrV4 != "" { selectedIP, selectedIsV6, addr = v4s[0], false, addrV4 }
-        } else if ip, isV6, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
-            selectedIP = ip
-            selectedIsV6 = isV6
-            parsed, _ := url.Parse(req.Url)
-            port := "443"
-            if parsed != nil && parsed.Scheme == "http" { port = "80" }
-            addr = net.JoinHostPort(ip, port)
-        }
-    }
+	var selectedIP string
+	var selectedIsV6 bool
+	if c.dns != nil {
+		// 自动注册域名到ProbeManager进行定期探测
+		if pm := GetGlobalProbeManager(); pm != nil {
+			pm.RegisterDomain(host)
+		}
+		// 若池内总IP数 < 2，先做一次强化探测以丰富池子
+		if v4a, v6a, e := c.dns.GetIPs(timeoutCtx, host); e == nil {
+			if len(v4a)+len(v6a) < 2 {
+				ctx2, cancel2 := context.WithTimeout(timeoutCtx, 2*time.Second)
+				_, _ = c.dns.resolveAndStore(ctx2, host)
+				cancel2()
+			}
+		}
+		// 双栈并行：若同时存在v4与v6，各挑一个并发请求，先返回者为准
+		if v4s, v6s, e := c.dns.GetIPs(timeoutCtx, host); e == nil && (len(v4s) > 0 || len(v6s) > 0) {
+			// 计算端口
+			parsed, _ := url.Parse(req.Url)
+			port := "443"
+			if parsed != nil && parsed.Scheme == "http" {
+				port = "80"
+			}
+			// 候选目标
+			var addrV4, addrV6 string
+			if len(v4s) > 0 {
+				addrV4 = net.JoinHostPort(v4s[0], port)
+			}
+			if len(v6s) > 0 {
+				addrV6 = net.JoinHostPort(v6s[0], port)
+			}
+			// 若同时存在两族，则并发；否则走单一路径
+			if addrV4 != "" && addrV6 != "" {
+				type result struct {
+					resp *rpc.FetchResponse
+					ip   string
+					isV6 bool
+					err  error
+				}
+				resCh := make(chan result, 2)
+				// 复制请求以便并发使用独立ctx
+				mkReq := func() (*http.Request, error) {
+					r2, e2 := http.NewRequestWithContext(timeoutCtx, "GET", req.Url, nil)
+					if e2 != nil {
+						return nil, e2
+					}
+					if len(configPkg.AppConfig.Crawler.DefaultHeaders) > 0 {
+						for k, v := range configPkg.AppConfig.Crawler.DefaultHeaders {
+							if r2.Header.Get(k) == "" {
+								r2.Header.Set(k, v)
+							}
+						}
+					}
+					for k, v := range req.Headers {
+						r2.Header.Set(k, v)
+					}
+					r2.Header.Set("User-Agent", selectUserAgentByTLSClient(req.TlsClient))
+					return r2, nil
+				}
+				chid := c.getClientHelloID()
+				// 发起函数
+				doOnce := func(targetAddr string, ip string, isV6 bool) {
+					r2, e2 := mkReq()
+					if e2 != nil {
+						resCh <- result{nil, ip, isV6, e2}
+						return
+					}
+					if ip != "" {
+						r2.Host = host
+					}
+					// h2
+					h2c := c.getOrCreateH2Client(host, targetAddr, chid)
+					st := time.Now()
+					if resp, e := h2c.Do(r2); e == nil {
+						defer resp.Body.Close()
+						body, _ := io.ReadAll(resp.Body)
+						headers := map[string]string{}
+						for k, v := range resp.Header {
+							if len(v) > 0 {
+								headers[k] = v[0]
+							}
+						}
+						if c.dns != nil && ip != "" {
+							_ = c.dns.ReportResult(host, ip, resp.StatusCode)
+							_ = c.dns.ReportLatency(host, ip, time.Since(st).Milliseconds())
+						}
+						resCh <- result{&rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, ip, isV6, nil}
+						return
+					}
+					// h1 回退
+					h1c := c.getOrCreateH1Client(host, targetAddr, chid)
+					st = time.Now()
+					if resp, e := h1c.Do(r2); e == nil {
+						defer resp.Body.Close()
+						body, _ := io.ReadAll(resp.Body)
+						headers := map[string]string{}
+						for k, v := range resp.Header {
+							if len(v) > 0 {
+								headers[k] = v[0]
+							}
+						}
+						if c.dns != nil && ip != "" {
+							_ = c.dns.ReportResult(host, ip, resp.StatusCode)
+							_ = c.dns.ReportLatency(host, ip, time.Since(st).Milliseconds())
+						}
+						resCh <- result{&rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, ip, isV6, nil}
+						return
+					}
+					resCh <- result{nil, ip, isV6, fmt.Errorf("both h2/h1 failed")}
+				}
+				go doOnce(addrV6, v6s[0], true)
+				go doOnce(addrV4, v4s[0], false)
+				// 先到先得
+				r := <-resCh
+				if r.err == nil && r.resp != nil {
+					return r.resp, nil
+				}
+				r2 := <-resCh
+				if r2.err == nil && r2.resp != nil {
+					return r2.resp, nil
+				}
+				// 并发都失败则继续走原单路逻辑（下面会处理）
+			}
+			// 单一路径（只有一种族）
+			if addrV6 != "" {
+				selectedIP, selectedIsV6, addr = v6s[0], true, addrV6
+			}
+			if addrV4 != "" {
+				selectedIP, selectedIsV6, addr = v4s[0], false, addrV4
+			}
+		} else if ip, isV6, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
+			selectedIP = ip
+			selectedIsV6 = isV6
+			parsed, _ := url.Parse(req.Url)
+			port := "443"
+			if parsed != nil && parsed.Scheme == "http" {
+				port = "80"
+			}
+			addr = net.JoinHostPort(ip, port)
+		}
+	}
 
 	// 构造请求
 	httpReq, err := http.NewRequestWithContext(timeoutCtx, "GET", req.Url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
-    // 先合并配置默认头（只在未被设置时生效）
+	// 先合并配置默认头（只在未被设置时生效）
 	if len(configPkg.AppConfig.Crawler.DefaultHeaders) > 0 {
 		for k, v := range configPkg.AppConfig.Crawler.DefaultHeaders {
 			if httpReq.Header.Get(k) == "" {
@@ -417,7 +476,7 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		httpReq.Host = host
 	}
 
-    // 若所选IP已被新近拉黑，则重新选择或回退域名
+	// 若所选IP已被新近拉黑，则重新选择或回退域名
 	if selectedIP != "" && c.dns != nil {
 		if banned, _ := c.dns.IsBlacklisted(host, selectedIP); banned {
 			selectedIP = ""
@@ -428,8 +487,8 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 				if parsed != nil && parsed.Scheme == "http" {
 					port = "80"
 				}
-                addr = net.JoinHostPort(ip2, port)
-                selectedIP = ip2
+				addr = net.JoinHostPort(ip2, port)
+				selectedIP = ip2
 			} else {
 				// 回退域名
 				addr = extractHostPort(req.Url)
@@ -437,25 +496,25 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		}
 	}
 
-    // 路由日志：明确 IPv4/IPv6 与目标
-    if selectedIP != "" {
-        log.Printf("[route] target=%s via_ip=%s ipv6=%v dial_addr=%s", host, selectedIP, selectedIsV6, addr)
-    } else {
-        log.Printf("[route] target=%s via_domain dial_addr=%s", host, addr)
-    }
+	// 路由日志：明确 IPv4/IPv6 与目标
+	if selectedIP != "" {
+		log.Printf("[route] target=%s via_ip=%s ipv6=%v dial_addr=%s", host, selectedIP, selectedIsV6, addr)
+	} else {
+		log.Printf("[route] target=%s via_domain dial_addr=%s", host, addr)
+	}
 
 	// uTLS 指纹
 	chid := c.getClientHelloID()
 
 	// 1) 优先 HTTP/2 + uTLS
-    h2c := c.getOrCreateH2Client(host, addr, chid)
-    // 不再写死 TE 等头部，全部由配置或请求传入
-    // 记录即将发送的请求头（HTTP/2 分支，注意部分头会被 http2 内部改写/剔除，例如 Connection）
+	h2c := c.getOrCreateH2Client(host, addr, chid)
+	// 不再写死 TE 等头部，全部由配置或请求传入
+	// 记录即将发送的请求头（HTTP/2 分支，注意部分头会被 http2 内部改写/剔除，例如 Connection）
 	{
-        log.Printf("[utls][h2] 准备发送请求: %s", httpReq.URL.String())
+		log.Printf("[utls][h2] 准备发送请求: %s", httpReq.URL.String())
 	}
-    start := time.Now()
-    resp, err := h2c.Do(httpReq)
+	start := time.Now()
+	resp, err := h2c.Do(httpReq)
 	if err == nil {
 		defer resp.Body.Close()
 		body, rerr := io.ReadAll(resp.Body)
@@ -469,23 +528,23 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 			}
 		}
 		// 记录IP结果（若启用DNS池且使用了直连IP）
-        if c.dns != nil && selectedIP != "" {
-            _ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
-            _ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
-        }
+		if c.dns != nil && selectedIP != "" {
+			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
+			_ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
+		}
 		return &rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, nil
 	}
 	errH2 := err
 
 	// 2) 回退 HTTP/1.1 + uTLS
-    h1c := c.getOrCreateH1Client(host, addr, chid)
-    // 不再写死 Connection 行为，由 Transport 与外部头共同决定
-    // 记录即将发送的请求头（HTTP/1.1 分支）
+	h1c := c.getOrCreateH1Client(host, addr, chid)
+	// 不再写死 Connection 行为，由 Transport 与外部头共同决定
+	// 记录即将发送的请求头（HTTP/1.1 分支）
 	{
-        log.Printf("[utls][h1] 准备发送请求: %s", httpReq.URL.String())
+		log.Printf("[utls][h1] 准备发送请求: %s", httpReq.URL.String())
 	}
-    start = time.Now()
-    resp, err = h1c.Do(httpReq)
+	start = time.Now()
+	resp, err = h1c.Do(httpReq)
 	if err == nil {
 		defer resp.Body.Close()
 		body, rerr := io.ReadAll(resp.Body)
@@ -498,17 +557,17 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 				headers[k] = v[0]
 			}
 		}
-        if c.dns != nil && selectedIP != "" {
-            _ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
-            _ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
-        }
+		if c.dns != nil && selectedIP != "" {
+			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
+			_ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
+		}
 		return &rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, nil
 	}
 	errH1 := err
 
 	// 2.5) 进一步回退：标准 http.Client（系统 TLS），尽量保证功能成功
-    start = time.Now()
-    resp, err = (&http.Client{Timeout: c.config.Timeout}).Do(httpReq)
+	start = time.Now()
+	resp, err = (&http.Client{Timeout: c.config.Timeout}).Do(httpReq)
 	if err == nil {
 		defer resp.Body.Close()
 		body, rerr := io.ReadAll(resp.Body)
@@ -521,10 +580,10 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 				headers[k] = v[0]
 			}
 		}
-        if c.dns != nil && selectedIP != "" {
-            _ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
-            _ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
-        }
+		if c.dns != nil && selectedIP != "" {
+			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
+			_ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
+		}
 		return &rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, nil
 	}
 
