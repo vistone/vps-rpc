@@ -20,7 +20,7 @@ func main() {
 
 	nodes := []string{"tile0.zeromaps.cn:4242", "tile3.zeromaps.cn:4242"}
 	url := "https://kh.google.com/rt/earth/PlanetoidMetadata"
-	requestsPerNode := 100
+	requestsPerNode := 200
 
 	headers := map[string]string{
 		"Accept":          "*/*",

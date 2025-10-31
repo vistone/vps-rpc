@@ -512,62 +512,75 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
         }
     }
 	
-    // 严格轮询：设备支持IPv6时优先（配置优先级），但在每个族内必须严格平均轮询所有可用IP
+    // 合并所有可用IP到单一列表（排除黑名单），不分IPv4/IPv6，统一严格轮询
+    allAvailableIPs := make([]struct {
+        ip   string
+        isV6 bool
+    }, 0)
+    
+    // 根据设备能力和配置决定加入哪些IP
     preferV6 := config.AppConfig.DNS.PreferIPv6
-    tryV6First := allowV6 && (!allowV4 || preferV6 || rec.NextPreferV6)
     
-    // 构建可用IP列表（排除黑名单），确保轮询时跳过不可用的
-    availableV6 := make([]string, 0, len(rec.IPv6))
-    for _, ip := range rec.IPv6 {
-        if !rec.Blacklist[ip] {
-            availableV6 = append(availableV6, ip)
+    // 如果设备支持IPv6且配置优先，IPv6在前；否则IPv4在前
+    if allowV6 && (preferV6 || !allowV4) {
+        // IPv6优先：先加IPv6，再加IPv4
+        for _, ip := range rec.IPv6 {
+            if !rec.Blacklist[ip] {
+                allAvailableIPs = append(allAvailableIPs, struct {
+                    ip   string
+                    isV6 bool
+                }{ip, true})
+            }
+        }
+        if allowV4 {
+            for _, ip := range rec.IPv4 {
+                if !rec.Blacklist[ip] {
+                    allAvailableIPs = append(allAvailableIPs, struct {
+                        ip   string
+                        isV6 bool
+                    }{ip, false})
+                }
+            }
+        }
+    } else {
+        // IPv4优先或仅IPv4：先加IPv4，再加IPv6
+        if allowV4 {
+            for _, ip := range rec.IPv4 {
+                if !rec.Blacklist[ip] {
+                    allAvailableIPs = append(allAvailableIPs, struct {
+                        ip   string
+                        isV6 bool
+                    }{ip, false})
+                }
+            }
+        }
+        if allowV6 {
+            for _, ip := range rec.IPv6 {
+                if !rec.Blacklist[ip] {
+                    allAvailableIPs = append(allAvailableIPs, struct {
+                        ip   string
+                        isV6 bool
+                    }{ip, true})
+                }
+            }
         }
     }
-    availableV4 := make([]string, 0, len(rec.IPv4))
-    for _, ip := range rec.IPv4 {
-        if !rec.Blacklist[ip] {
-            availableV4 = append(availableV4, ip)
-        }
+    
+    if len(allAvailableIPs) == 0 {
+        p.mu.Unlock()
+        return "", false, fmt.Errorf("无可用IP: %s", domain)
     }
     
-	// 先尝试V6（如果有可用且优先）
-	if tryV6First && len(availableV6) > 0 {
-        idx := rec.NextIndex6 % len(availableV6)
-        rec.NextIndex6 = (rec.NextIndex6 + 1) % len(availableV6)
-        candidate := availableV6[idx]
-        if allowV4 && allowV6 {
-            rec.NextPreferV6 = false
-        }
-        p.mu.Unlock()
-        if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
-        return candidate, true, nil
-	}
-	// 尝试V4
-	if allowV4 && len(availableV4) > 0 {
-        idx := rec.NextIndex4 % len(availableV4)
-        rec.NextIndex4 = (rec.NextIndex4 + 1) % len(availableV4)
-        candidate := availableV4[idx]
-        if allowV4 && allowV6 {
-            rec.NextPreferV6 = true
-        }
-        p.mu.Unlock()
-        if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
-        return candidate, false, nil
-	}
-	// 如果未尝试V6且允许，最后再试一次V6（回退）
-	if !tryV6First && allowV6 && len(availableV6) > 0 {
-        idx := rec.NextIndex6 % len(availableV6)
-        rec.NextIndex6 = (rec.NextIndex6 + 1) % len(availableV6)
-        candidate := availableV6[idx]
-        if allowV4 && allowV6 {
-            rec.NextPreferV6 = false
-        }
-        p.mu.Unlock()
-        if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
-        return candidate, true, nil
-	}
-	p.mu.Unlock()
-	return "", false, fmt.Errorf("无可用IP: %s", domain)
+    // 使用统一的索引进行严格轮询（合并后的列表）
+    // 使用 NextIndex4 作为统一索引（NextIndex6 保留兼容性，但实际不用）
+    unifiedIdx := rec.NextIndex4
+    idx := unifiedIdx % len(allAvailableIPs)
+    rec.NextIndex4 = (unifiedIdx + 1) % len(allAvailableIPs)
+    
+    selected := allAvailableIPs[idx]
+    p.mu.Unlock()
+    if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
+    return selected.ip, selected.isV6, nil
 }
 
 // ReportResult 根据返回码更新黑名单。
