@@ -378,10 +378,9 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName 
 	d := &net.Dialer{Timeout: c.config.Timeout}
 	// 无论目标是IPv4还是IPv6，都从本机IPv6池轮询一个源地址进行绑定
 	// 这样可以充分利用系统的多个IPv6地址进行负载分散
+	// 注意：不打印日志以避免高并发时的性能问题
 	if src := NextIPv6LocalAddr(); src != nil {
 		d.LocalAddr = &net.TCPAddr{IP: src}
-		host, _, _ := net.SplitHostPort(address)
-		log.Printf("[route] bind_src_ipv6=%s target_host=%s target_addr=%s", src.String(), serverName, host)
 	}
 	tcpConn, err := d.DialContext(ctx, network, address)
 	if err != nil {
