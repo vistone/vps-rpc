@@ -50,6 +50,9 @@ type DNSPool struct {
     // 并发检测：用于检测短时间内同一域名的并发请求
     concurrentRequests map[string]int64 // domain -> 最近请求时间戳
     concurrentMu       sync.Mutex
+    // 并发批次预留IP池：domain -> []预留的IP
+    reservedIPPool     map[string][]struct{IP string; IsV6 bool; reservedAt int64}
+    reservedMu        sync.Mutex
 }
 
 func NewDNSPool(path string) (*DNSPool, error) {
@@ -64,6 +67,7 @@ func NewDNSPool(path string) (*DNSPool, error) {
         filename:           path,
         closed:             make(chan struct{}),
         concurrentRequests: make(map[string]int64),
+        reservedIPPool:     make(map[string][]struct{IP string; IsV6 bool; reservedAt int64}),
     }
     if err := pool.loadFromDisk(); err != nil {
         if !errors.Is(err, os.ErrNotExist) {
@@ -521,28 +525,61 @@ func (p *DNSPool) GetAllDomainsAndIPs() map[string][]string {
 // 优化：请求路径使用快速解析模式，避免阻塞请求
 // 增强：自动检测并发，在并发时使用批量分配确保负载分流
 func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bool, err error) {
-	// 并发检测：检查是否有其他请求在同一时间窗口内
-	p.concurrentMu.Lock()
+	const concurrentWindow = 200 * time.Millisecond // 200ms内的请求视为并发批次
+	const reservedTTL = 500 * time.Millisecond     // 预留IP池的TTL
+	
 	now := time.Now().UnixNano()
+	
+	// 首先检查是否有预留的IP池可用
+	p.reservedMu.Lock()
+	reserved, hasReserved := p.reservedIPPool[domain]
+	if hasReserved && len(reserved) > 0 {
+		// 清理过期的预留IP（超过TTL的）
+		valid := reserved[:0]
+		for _, r := range reserved {
+			if now-r.reservedAt < int64(reservedTTL) {
+				valid = append(valid, r)
+			}
+		}
+		if len(valid) > 0 {
+			// 取出第一个预留IP
+			selected := valid[0]
+			p.reservedIPPool[domain] = valid[1:] // 移除已使用的IP
+			p.reservedMu.Unlock()
+			return selected.IP, selected.IsV6, nil
+		}
+		// 所有预留IP都过期了，清除
+		delete(p.reservedIPPool, domain)
+	}
+	p.reservedMu.Unlock()
+	
+	// 没有预留IP，检查是否需要创建新的预留池
+	p.concurrentMu.Lock()
 	lastTime, exists := p.concurrentRequests[domain]
-	const concurrentWindow = 50 * time.Millisecond // 50ms内的请求视为并发批次
 	isConcurrent := exists && (now-lastTime < int64(concurrentWindow))
 	
-	// 如果是并发请求，使用批量分配（预先分配8个IP，但只返回第一个）
-	// 这样后续的并发请求会自动分配到不同的IP
-	if isConcurrent {
-		// 更新最后时间
+	// 如果是并发请求或首次请求，创建预留池
+	if isConcurrent || !exists {
 		p.concurrentRequests[domain] = now
 		p.concurrentMu.Unlock()
 		
-		// 使用批量分配，预先分配8个IP
+		// 批量分配8个IP，放入预留池
 		if ips, e := p.NextIPs(ctx, domain, 8); e == nil && len(ips) > 0 {
-			// 返回第一个IP，后续请求会从下一个索引开始
+			// 将所有IP放入预留池
+			reservedList := make([]struct{IP string; IsV6 bool; reservedAt int64}, len(ips))
+			for i, ipInfo := range ips {
+				reservedList[i] = struct{IP string; IsV6 bool; reservedAt int64}{ipInfo.IP, ipInfo.IsV6, now}
+			}
+			p.reservedMu.Lock()
+			p.reservedIPPool[domain] = reservedList
+			p.reservedMu.Unlock()
+			
+			// 返回第一个IP
 			return ips[0].IP, ips[0].IsV6, nil
 		}
 		// 如果批量分配失败，回退到单个分配
 	} else {
-		// 非并发请求，更新最后时间
+		// 非并发请求（距离上次请求超过200ms），使用单个分配
 		p.concurrentRequests[domain] = now
 		p.concurrentMu.Unlock()
 	}
