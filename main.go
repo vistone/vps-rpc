@@ -1,14 +1,15 @@
 package main
 
 import (
-	"os"
-	"os/signal"
-	"syscall"
+    "os"
+    "os/signal"
+    "syscall"
 
-	"vps-rpc/config"
-	"vps-rpc/logger"
-	"vps-rpc/proxy"
-	"vps-rpc/server"
+    "vps-rpc/config"
+    "vps-rpc/logger"
+    "vps-rpc/proxy"
+    "vps-rpc/server"
+    "vps-rpc/systemcheck"
 )
 
 // main 程序入口函数
@@ -43,6 +44,12 @@ func main() {
 			defer probe.Close()
 		}
 	}
+
+    // 系统预检 + 自动调优（按资源自适应，非root仅做进程级优化）
+    {
+        systemcheck.ApplyAutoTuning()
+        _ = systemcheck.RunPreflightChecks()
+    }
 
 	// 创建爬虫服务实例（传入统计收集器）
 	crawlerServer := server.NewCrawlerServer(stats)
