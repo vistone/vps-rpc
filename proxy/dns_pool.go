@@ -163,8 +163,43 @@ func (p *DNSPool) persistNow() {
         // 空记录不写入，避免覆盖已有数据
         return
     }
-    data, err := json.MarshalIndent(p.records, "", "  ")
+    // 创建完整副本用于持久化（包含IPv4和IPv6）
+    persistRecords := make(map[string]*dnsRecord, recordCount)
+    for domain, rec := range p.records {
+        if rec == nil {
+            continue
+        }
+        // 创建完整副本，保留所有数据（IPv4和IPv6）
+        persistRec := &dnsRecord{
+            Domain:       rec.Domain,
+            IPv4:         append([]string(nil), rec.IPv4...),
+            IPv6:         append([]string(nil), rec.IPv6...),
+            UpdatedAt:    rec.UpdatedAt,
+            NextIndex4:   rec.NextIndex4,
+            NextIndex6:   rec.NextIndex6,
+            NextPreferV6: rec.NextPreferV6,
+            Blacklist:    make(map[string]bool),
+            Whitelist:    make(map[string]bool),
+            EwmaLatency4: rec.EwmaLatency4,
+            EwmaLatency6: rec.EwmaLatency6,
+            IPLatency:    make(map[string]float64),
+        }
+        // 复制完整的黑白名单（包含IPv4和IPv6）
+        for ip, val := range rec.Blacklist {
+            persistRec.Blacklist[ip] = val
+        }
+        for ip, val := range rec.Whitelist {
+            persistRec.Whitelist[ip] = val
+        }
+        // 复制完整的IP延迟（包含IPv4和IPv6）
+        for ip, latency := range rec.IPLatency {
+            persistRec.IPLatency[ip] = latency
+        }
+        persistRecords[domain] = persistRec
+    }
     p.mu.RUnlock()
+    
+    data, err := json.MarshalIndent(persistRecords, "", "  ")
     if err != nil { 
         log.Printf("[dns-pool] marshal failed: %v", err)
         return
@@ -663,9 +698,10 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
 		}
 	}
 	
-	allowV4 := HasIPv4()
-	allowV6 := HasIPv6()
-	
+    // 正常使用IPv6/IPv4（根据设备能力和配置）
+    allowV4 := HasIPv4()
+    allowV6 := HasIPv6()
+    
     // 直接操作内存中的记录，确保索引更新生效
 	p.mu.Lock()
 	rec = p.records[domain]
@@ -692,13 +728,13 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
         }
     }
 	
-    // 合并所有可用IP到单一列表（排除黑名单），不分IPv4/IPv6，统一严格轮询
+    // 合并所有可用IP到单一列表（排除黑名单），根据设备能力和配置选择IPv4/IPv6，统一严格轮询
     allAvailableIPs := make([]struct {
         ip   string
         isV6 bool
     }, 0)
     
-    // 根据设备能力和配置决定加入哪些IP
+    // 根据设备能力和配置决定加入哪些IP（支持IPv6的设备优先使用IPv6）
     preferV6 := config.AppConfig.DNS.PreferIPv6
     
     // 如果设备支持IPv6且配置优先，IPv6在前；否则IPv4在前
@@ -788,6 +824,7 @@ func (p *DNSPool) NextIPs(ctx context.Context, domain string, count int) ([]stru
 		}
 	}
 	
+	// 正常使用IPv6/IPv4（根据设备能力和配置）
 	allowV4 := HasIPv4()
 	allowV6 := HasIPv6()
 	
@@ -817,7 +854,7 @@ func (p *DNSPool) NextIPs(ctx context.Context, domain string, count int) ([]stru
 		}
 	}
 	
-	// 合并所有可用IP到单一列表（排除黑名单）
+	// 合并所有可用IP到单一列表（排除黑名单），根据设备能力和配置选择IPv4/IPv6
 	allAvailableIPs := make([]struct {
 		ip   string
 		isV6 bool
@@ -826,6 +863,7 @@ func (p *DNSPool) NextIPs(ctx context.Context, domain string, count int) ([]stru
 	preferV6 := config.AppConfig.DNS.PreferIPv6
 	
 	if allowV6 && (preferV6 || !allowV4) {
+		// IPv6优先：先加IPv6，再加IPv4
 		for _, ip := range rec.IPv6 {
 			if !rec.Blacklist[ip] {
 				allAvailableIPs = append(allAvailableIPs, struct {
@@ -845,6 +883,7 @@ func (p *DNSPool) NextIPs(ctx context.Context, domain string, count int) ([]stru
 			}
 		}
 	} else {
+		// IPv4优先或仅IPv4：先加IPv4，再加IPv6
 		if allowV4 {
 			for _, ip := range rec.IPv4 {
 				if !rec.Blacklist[ip] {
