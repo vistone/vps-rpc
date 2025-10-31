@@ -574,57 +574,11 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
         return "", false, fmt.Errorf("无可用IP: %s", domain)
     }
     
-    // 基于延迟的权重轮询：优先选快的，但仍保证所有IP都有机会
-    // 计算每个IP的权重（延迟越低权重越高）
-    weights := make([]float64, len(allAvailableIPs))
-    totalWeight := 0.0
-    for i, item := range allAvailableIPs {
-        latency := rec.IPLatency[item.ip]
-        if latency == 0 {
-            // 未知延迟给默认权重（假设50ms）
-            latency = 50.0
-        }
-        // 权重 = 100 / 延迟，延迟越低权重越高
-        weight := 100.0 / (latency + 1.0)
-        weights[i] = weight
-        totalWeight += weight
-    }
-    
-    // 使用权重随机选择（仍使用索引但跳过慢IP的概率更高）
-    if totalWeight > 0 {
-        // 简化：每10次中，7次选权重最高的，3次严格轮询（保证均衡）
-        unifiedIdx := rec.NextIndex4
-        rec.NextIndex4 = (unifiedIdx + 1) % len(allAvailableIPs)
-        
-        var selected struct {
-            ip   string
-            isV6 bool
-        }
-        if unifiedIdx%10 < 7 {
-            // 70%概率：选权重最高的IP
-            maxWeight := 0.0
-            maxIdx := 0
-            for i, w := range weights {
-                if w > maxWeight {
-                    maxWeight = w
-                    maxIdx = i
-                }
-            }
-            selected = allAvailableIPs[maxIdx]
-        } else {
-            // 30%概率：严格轮询（保证均衡）
-            idx := unifiedIdx % len(allAvailableIPs)
-            selected = allAvailableIPs[idx]
-        }
-        p.mu.Unlock()
-        if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
-        return selected.ip, selected.isV6, nil
-    }
-    
-    // 回退：严格轮询
+    // 严格轮询：所有IP平均分配，使用统一索引
     unifiedIdx := rec.NextIndex4
     idx := unifiedIdx % len(allAvailableIPs)
     rec.NextIndex4 = (unifiedIdx + 1) % len(allAvailableIPs)
+    
     selected := allAvailableIPs[idx]
     p.mu.Unlock()
     if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
