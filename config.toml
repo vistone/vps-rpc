@@ -54,7 +54,7 @@ multiplier = 2.0
 [admin]
 # 管理服务配置
 # 服务器版本号
-version = "1.0.282"
+version = "1.0.283"
 # 日志缓冲区大小（最多保存的日志条目数量）
 log_buffer_size = 1000
 # 默认最大日志行数
@@ -81,4 +81,4 @@ sync_interval = "10s"
 # 中心地址（节点仅与中心交互；中心返回全集）
 address = "tile0.zeromaps.cn:4242"
 # 心跳周期（ReportNode 作为心跳）
-heartbeat_interval = "2s"
+heartbeat_interval = "20s"

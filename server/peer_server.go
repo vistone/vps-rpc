@@ -75,6 +75,11 @@ func (s *PeerServiceServer) ExchangeDNS(ctx context.Context, req *rpc.ExchangeDN
 func (s *PeerServiceServer) GetPeers(ctx context.Context, req *rpc.GetPeersRequest) (*rpc.GetPeersResponse, error) {
     // 返回去重后的种子+已知节点全集
     uniq := map[string]bool{}
+    // include self if configured
+    if sa := config.AppConfig.Peer.MyAddr; sa != "" {
+        uniq[sa] = true
+        s.knownPeers[sa] = true
+    }
     // seeds
     for _, seed := range config.AppConfig.Peer.Seeds {
         if seed == "" { continue }
