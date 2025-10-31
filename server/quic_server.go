@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"log"
+	"time"
 
 	"github.com/quic-go/quic-go"
 	"google.golang.org/protobuf/proto"
@@ -134,9 +135,14 @@ func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
 		return
 	}
 
+	// 记录QUIC RPC请求开始时间（用于计算端到端延迟）
+	quicRpcStart := time.Now()
+	
 	// 调用爬虫服务
 	ctx := context.Background()
 	resp, err := s.crawlerServer.Fetch(ctx, &req)
+	
+	quicRpcLatency := time.Since(quicRpcStart)
 	if err != nil {
 		resp = &rpc.FetchResponse{
 			Url:        req.Url,
@@ -146,15 +152,18 @@ func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
 	}
 
 	// 序列化响应
+	serializeStart := time.Now()
 	respData, err := proto.Marshal(resp)
 	if err != nil {
 		log.Printf("序列化响应失败: %v", err)
 		return
 	}
+	serializeLatency := time.Since(serializeStart)
 
 	// 发送响应：长度 + 数据
 	respLen := uint32(len(respData))
 	binary.BigEndian.PutUint32(length[:], respLen)
+	sendStart := time.Now()
 	if _, err := stream.Write(length[:]); err != nil {
 		log.Printf("发送响应长度失败: %v", err)
 		return
@@ -163,6 +172,12 @@ func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
 		log.Printf("发送响应数据失败: %v", err)
 		return
 	}
+	sendLatency := time.Since(sendStart)
+	totalLatency := time.Since(quicRpcStart)
+	
+	// 记录详细的QUIC RPC处理时间分解
+	log.Printf("[quic-rpc] URL=%s, 服务处理=%v, 序列化=%v, 发送=%v, 总计=%v", 
+		req.Url, quicRpcLatency, serializeLatency, sendLatency, totalLatency)
 }
 
 // quicConnWrapper 将QUIC连接和流包装为gRPC可以使用的连接

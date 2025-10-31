@@ -80,9 +80,9 @@ func NewCrawlerServer(stats *StatsCollector) *CrawlerServer {
 //	*rpc.FetchResponse: 抓取响应对象，包含抓取结果
 //	error: 可能发生的错误
 func (s *CrawlerServer) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.FetchResponse, error) {
-	// 记录开始时间
-	startTime := time.Now()
-
+	// 记录RPC请求到达时间（用于计算端到端延迟）
+	rpcStartTime := time.Now()
+	
 	// 记录抓取日志，包含目标URL
 	log.Printf("正在抓取 URL: %s", req.Url)
 
@@ -115,15 +115,18 @@ func (s *CrawlerServer) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.
 
 	// 执行抓取操作
 	// Fetch方法会执行实际的网页抓取并返回结果
+	httpFetchStart := time.Now()
 	response, err := client.Fetch(ctx, req)
+	httpFetchLatency := time.Since(httpFetchStart)
 
-	// 计算延迟时间
-	latency := time.Since(startTime)
+	// 计算总延迟时间（RPC请求处理总时间）
+	rpcTotalLatency := time.Since(rpcStartTime)
 
-	// 记录单请求耗时日志
-	log.Printf("抓取完成 URL: %s, 耗时: %v", req.Url, latency)
+	// 记录详细耗时日志（包含HTTP抓取和RPC总时间）
+	log.Printf("抓取完成 URL: %s, HTTP抓取: %v, RPC总耗时: %v (RPC传输: %v)", 
+		req.Url, httpFetchLatency, rpcTotalLatency, rpcTotalLatency-httpFetchLatency)
 
-	// 记录统计信息
+	// 记录统计信息（使用HTTP抓取时间作为主要指标）
 	if s.stats != nil {
 		success := err == nil && response != nil && response.Error == ""
 		errorType := ""
@@ -132,7 +135,7 @@ func (s *CrawlerServer) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.
 		} else if response != nil && response.Error != "" {
 			errorType = "response_error"
 		}
-		s.stats.RecordRequest(success, latency, errorType)
+		s.stats.RecordRequest(success, httpFetchLatency, errorType)
 	}
 
 	if err != nil {
