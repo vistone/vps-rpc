@@ -29,6 +29,8 @@ type Config struct {
 	DNS DNSConfig `toml:"dns"`
 	// Peer 对等节点配置（自举 seeds）
 	Peer PeerConfig `toml:"peer"`
+    // Center 中心模式配置
+    Center CenterConfig `toml:"center"`
 }
 
 // ServerConfig 服务器配置
@@ -165,6 +167,14 @@ type PeerConfig struct {
     MyAddr string `toml:"my_addr"`
     // SyncInterval 互发现同步周期，形如 "5s"、"1m"，为空则用默认
     SyncInterval string `toml:"sync_interval"`
+}
+
+// CenterConfig 中心模式配置
+type CenterConfig struct {
+    // Address 中心地址（host:port），例如 tile0.zeromaps.cn:4242
+    Address string `toml:"address"`
+    // HeartbeatInterval 心跳周期，如 "2s"
+    HeartbeatInterval string `toml:"heartbeat_interval"`
 }
 
 // AppConfig 全局配置变量

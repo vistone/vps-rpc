@@ -278,11 +278,33 @@ func (p *PeerSyncManager) Start() {
         }
     }
 
-	// 启动定期同步任务
+    // 启动定期同步任务
 	p.wg.Add(1)
 	go p.periodicSync()
 
 	log.Printf("[peer-sync] peer同步管理器已启动")
+
+    // 中心模式：启动心跳（周期性与中心交互）
+    if addr := config.AppConfig.Center.Address; addr != "" {
+        hb := 2 * time.Second
+        if s := config.AppConfig.Center.HeartbeatInterval; s != "" {
+            if d, err := time.ParseDuration(s); err == nil && d > 0 { hb = d }
+        }
+        p.wg.Add(1)
+        go func(){
+            defer p.wg.Done()
+            ticker := time.NewTicker(hb)
+            defer ticker.Stop()
+            for {
+                select {
+                case <-p.closed:
+                    return
+                case <-ticker.C:
+                    p.syncWithPeer(addr)
+                }
+            }
+        }()
+    }
 }
 
 // Stop 停止peer同步管理器
@@ -348,7 +370,11 @@ func (p *PeerSyncManager) syncAll() {
 
 // syncWithSeeds 与种子节点同步
 func (p *PeerSyncManager) syncWithSeeds() {
-	seeds := config.AppConfig.Peer.Seeds
+    if addr := config.AppConfig.Center.Address; addr != "" {
+        go p.syncWithPeer(addr)
+        return
+    }
+    seeds := config.AppConfig.Peer.Seeds
 	if len(seeds) == 0 {
 		return
 	}
