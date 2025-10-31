@@ -433,13 +433,15 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
         cancelR()
     }
 
-	// 添加新的peers到已知列表
+    // 添加新的peers到已知列表（并立即触发与新节点的同步）
 	p.mu.Lock()
 	for _, peer := range peers {
 		if peer != peerAddr && !p.knownPeers[peer] {
 			p.knownPeers[peer] = true
             SavePeer(peer)
 			log.Printf("[peer-sync] 发现新节点: %s", peer)
+            // 立即与新学到的节点进行一次同步，不等周期
+            go p.syncWithPeer(peer)
 		}
 	}
 	p.mu.Unlock()
