@@ -19,6 +19,8 @@ import (
 type QuicRpcServer struct {
 	// crawlerServer 爬虫服务实例
 	crawlerServer *CrawlerServer
+	// peerServer peer服务实例
+	peerServer rpc.PeerServiceServer
 	// quicListener QUIC监听器
 	// 用于监听和接受QUIC连接
 	quicListener quic.EarlyListener
@@ -57,6 +59,7 @@ func NewQuicRpcServer(crawlerServer *CrawlerServer) (*QuicRpcServer, error) {
 
 	return &QuicRpcServer{
 		crawlerServer: crawlerServer,
+		peerServer:    nil, // 暂时为nil，后续会在main.go中设置
 		quicListener:  *quicListener,
 	}, nil
 }

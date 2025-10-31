@@ -418,3 +418,25 @@ func (p *DNSPool) ListWhitelisted(domain string) ([]string, error) {
 	}
 	return out, nil
 }
+
+// GetAllRecords 获取所有DNS记录（用于peer同步）
+func (p *DNSPool) GetAllRecords(ctx context.Context) map[string]*dnsRecord {
+	result := make(map[string]*dnsRecord)
+	if p.db == nil {
+		return result
+	}
+	p.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("dns_records"))
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			var rec dnsRecord
+			if err := json.Unmarshal(v, &rec); err == nil {
+				result[string(k)] = &rec
+			}
+			return nil
+		})
+	})
+	return result
+}
