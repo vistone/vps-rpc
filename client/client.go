@@ -7,21 +7,22 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 
 	"vps-rpc/rpc"
 )
 
-// Client gRPC客户端结构体
+// Client QUIC客户端结构体（已切换为QUIC协议）
 // 提供与服务器通信的接口
 type Client struct {
-	// conn gRPC连接（单连接模式）
+	// conn gRPC连接（QUIC模式下不再使用）
 	conn *grpc.ClientConn
-	// client 爬虫服务客户端
+	// client 爬虫服务客户端（QUIC模式下不再使用）
 	client rpc.CrawlerServiceClient
+	// quicClient QUIC客户端
+	quicClient *QuicClient
 	// address 服务器地址
 	address string
-	// pool 连接池（连接池模式）
+	// pool 连接池（QUIC模式下不再使用）
 	pool *ConnectionPool
 	// retryExecutor 重试执行器
 	retryExecutor *RetryExecutor
@@ -85,46 +86,19 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		timeout = 10 * time.Second
 	}
 
-	// 创建TLS凭证
-	var creds credentials.TransportCredentials
-	if config.TLSConfig != nil || config.InsecureSkipVerify {
-		tlsConfig := config.TLSConfig
-		if tlsConfig == nil {
-			tlsConfig = &tls.Config{
-				InsecureSkipVerify: config.InsecureSkipVerify,
-			}
-		}
-		creds = credentials.NewTLS(tlsConfig)
+	// 使用QUIC协议（最快速度）
+	quicClient, err := NewQuicClient(config.Address, config.InsecureSkipVerify)
+	if err != nil {
+		return nil, fmt.Errorf("创建QUIC客户端失败: %w", err)
 	}
 
+	// 将QUIC客户端包装为标准Client接口
 	client := &Client{
 		address:  config.Address,
-		usePool:  config.EnableConnectionPool,
+		usePool:  false, // QUIC模式下暂不使用连接池
 		useRetry: config.EnableRetry,
-		client:   nil, // 将在需要时创建
-	}
-
-	// 如果启用连接池，创建连接池
-	if config.EnableConnectionPool {
-		maxPoolSize := config.MaxPoolSize
-		// 如果未指定连接池大小，使用默认值
-		// 注意：这里应该从全局配置读取，但ClientConfig是客户端配置，不依赖全局配置
-		if maxPoolSize <= 0 {
-			maxPoolSize = 10 // 默认最大连接数（应该从配置读取）
-		}
-		// 创建连接池实例
-		client.pool = NewConnectionPool(config.Address, creds, maxPoolSize, timeout)
-	} else {
-		// 否则创建单个连接
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-
-		conn, err := grpc.DialContext(ctx, config.Address, grpc.WithTransportCredentials(creds))
-		if err != nil {
-			return nil, fmt.Errorf("连接服务器失败: %w", err)
-		}
-		client.conn = conn
-		client.client = rpc.NewCrawlerServiceClient(conn)
+		quicClient: quicClient,
+		client:   nil, // gRPC客户端不再使用
 	}
 
 	// 如果启用重试，创建重试执行器
@@ -154,15 +128,14 @@ func (c *Client) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.FetchRe
 		return nil, fmt.Errorf("请求不能为空")
 	}
 
+	// 使用QUIC客户端
+	if c.quicClient == nil {
+		return nil, fmt.Errorf("QUIC客户端未初始化")
+	}
+
 	// 定义执行函数
 	fn := func() (interface{}, error) {
-		// 获取客户端（连接池模式需要从池中获取连接）
-		client, err := c.getClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		return client.Fetch(ctx, req)
+		return c.quicClient.Fetch(ctx, req)
 	}
 
 	// 如果启用重试，使用重试执行器
@@ -197,32 +170,36 @@ func (c *Client) BatchFetch(ctx context.Context, req *rpc.BatchFetchRequest) (*r
 		return nil, fmt.Errorf("请求不能为空")
 	}
 
-	// 定义执行函数
-	fn := func() (interface{}, error) {
-		// 获取客户端（连接池模式需要从池中获取连接）
-		client, err := c.getClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		return client.BatchFetch(ctx, req)
+	// QUIC模式下：并发调用多个Fetch请求
+	if c.quicClient == nil {
+		return nil, fmt.Errorf("QUIC客户端未初始化")
 	}
 
-	// 如果启用重试，使用重试执行器
-	if c.useRetry && c.retryExecutor != nil {
-		result, err := c.retryExecutor.Execute(ctx, fn)
-		if err != nil {
-			return nil, err
-		}
-		return result.(*rpc.BatchFetchResponse), nil
+	responses := make([]*rpc.FetchResponse, 0, len(req.Requests))
+	maxConcurrent := int(req.MaxConcurrent)
+	if maxConcurrent <= 0 {
+		maxConcurrent = 10 // 默认并发数
 	}
 
-	// 否则直接执行
-	result, err := fn()
-	if err != nil {
-		return nil, fmt.Errorf("批量抓取失败: %w", err)
+	// 使用goroutine和channel控制并发
+	sem := make(chan struct{}, maxConcurrent)
+	results := make(chan *rpc.FetchResponse, len(req.Requests))
+
+	for _, r := range req.Requests {
+		sem <- struct{}{} // 获取信号量
+		go func(fetchReq *rpc.FetchRequest) {
+			defer func() { <-sem }() // 释放信号量
+			resp, _ := c.quicClient.Fetch(ctx, fetchReq)
+			results <- resp
+		}(r)
 	}
-	return result.(*rpc.BatchFetchResponse), nil
+
+	// 收集结果
+	for i := 0; i < len(req.Requests); i++ {
+		responses = append(responses, <-results)
+	}
+
+	return &rpc.BatchFetchResponse{Responses: responses}, nil
 }
 
 // getClient 获取爬虫服务客户端

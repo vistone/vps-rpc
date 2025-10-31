@@ -2,22 +2,22 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
+	"io"
 	"log"
 
 	"github.com/quic-go/quic-go"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
+	"google.golang.org/protobuf/proto"
 
 	"vps-rpc/config"
 	"vps-rpc/rpc"
 )
 
 // QuicRpcServer QUIC RPC服务器结构体
-// 包含gRPC服务器和QUIC监听器，用于提供基于QUIC的RPC服务
+// 基于QUIC流的自定义RPC协议，不使用gRPC以追求最快速度
 type QuicRpcServer struct {
-	// grpcServer gRPC服务器实例
-	// 用于处理gRPC请求
-	grpcServer *grpc.Server
+	// crawlerServer 爬虫服务实例
+	crawlerServer *CrawlerServer
 	// quicListener QUIC监听器
 	// 用于监听和接受QUIC连接
 	quicListener quic.EarlyListener
@@ -31,119 +31,137 @@ type QuicRpcServer struct {
 //
 //	*QuicRpcServer: 新创建的QUIC RPC服务器实例
 //	error: 可能发生的错误
-func NewQuicRpcServer() (*QuicRpcServer, error) {
+func NewQuicRpcServer(crawlerServer *CrawlerServer) (*QuicRpcServer, error) {
 	// 生成TLS配置
 	tlsConfig, err := GenerateTLSConfig()
 	if err != nil {
-		// 如果生成TLS配置失败，返回错误
 		return nil, err
 	}
 
-	// 创建gRPC服务器，并配置TLS凭证
-	grpcServer := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
-
 	// 获取QUIC配置
-	// 从应用程序配置中获取QUIC相关参数
 	quicConfig := &quic.Config{
-		// 设置最大空闲超时时间
-		MaxIdleTimeout: config.AppConfig.GetQuicMaxIdleTimeout(),
-		// 设置握手空闲超时时间
-		HandshakeIdleTimeout: config.AppConfig.GetQuicHandshakeIdleTimeout(),
-		// 设置最大入站流数量
-		MaxIncomingStreams: int64(config.AppConfig.Quic.MaxIncomingStreams),
-		// 设置最大入站单向流数量
-		MaxIncomingUniStreams: int64(config.AppConfig.Quic.MaxIncomingUniStreams),
+		MaxIdleTimeout:         config.AppConfig.GetQuicMaxIdleTimeout(),
+		HandshakeIdleTimeout:   config.AppConfig.GetQuicHandshakeIdleTimeout(),
+		MaxIncomingStreams:     int64(config.AppConfig.Quic.MaxIncomingStreams),
+		MaxIncomingUniStreams:   int64(config.AppConfig.Quic.MaxIncomingUniStreams),
 	}
 
 	// 创建QUIC监听器
-	// 使用指定地址、TLS配置和QUIC配置创建监听器
 	quicListener, err := quic.ListenAddrEarly(config.AppConfig.GetServerAddr(), tlsConfig, quicConfig)
 	if err != nil {
-		// 如果创建监听器失败，返回错误
 		return nil, err
 	}
 
-	// 记录QUIC服务器监听地址的日志
 	log.Printf("QUIC服务器监听在地址: %s", config.AppConfig.GetServerAddr())
 
-	// 返回新的QUIC RPC服务器实例
 	return &QuicRpcServer{
-		// 设置gRPC服务器
-		grpcServer: grpcServer,
-		// 设置QUIC监听器（需要解引用，因为ListenAddrEarly返回的是指针）
-		quicListener: *quicListener,
+		crawlerServer: crawlerServer,
+		quicListener:  *quicListener,
 	}, nil
 }
 
-// RegisterService 注册服务
-// 将指定的服务注册到gRPC服务器中
-// 参数:
-//
-//	service: 要注册的RPC服务实例
+// RegisterService 注册服务（兼容接口，QUIC模式下已在NewQuicRpcServer传入）
 func (s *QuicRpcServer) RegisterService(service rpc.CrawlerServiceServer) {
-	// 将爬虫服务注册到gRPC服务器
-	rpc.RegisterCrawlerServiceServer(s.grpcServer, service)
+	// QUIC模式下服务已在创建时传入，此方法保留用于兼容
+}
+
+// RegisterAdminService 注册管理服务（QUIC模式下暂不支持）
+func (s *QuicRpcServer) RegisterAdminService(service *AdminServer) {
+	// QUIC模式下暂不支持管理服务
 }
 
 // Serve 启动服务器服务
-// 开始接受和处理客户端连接
-// 返回值:
-//
-//	error: 可能发生的错误
+// 基于QUIC流的自定义RPC协议：每个请求使用一个新流，直接传输protobuf消息
 func (s *QuicRpcServer) Serve() error {
-	// 记录服务器开始服务的日志
 	log.Println("QUIC RPC服务器开始服务")
 
-	// 循环接受客户端连接
 	for {
-		// 接受新的QUIC连接
 		conn, err := s.quicListener.Accept(context.Background())
 		if err != nil {
-			// 如果接受连接失败，记录错误日志并返回错误
-			log.Printf("接受连接失败: %v", err)
+			log.Printf("接受QUIC连接失败: %v", err)
 			return err
 		}
 
-		// 为每个连接启动独立的goroutine进行处理
-		go func(quicConn *quic.Conn) {
-			// 在函数退出时关闭QUIC连接
-			defer quicConn.CloseWithError(0, "服务器关闭连接")
+		go s.handleConnection(conn)
+	}
+}
 
-			// 记录接受新连接的日志
-			log.Printf("已接受来自 %s 的新连接", quicConn.RemoteAddr().String())
+// handleConnection 处理单个QUIC连接
+func (s *QuicRpcServer) handleConnection(conn *quic.Conn) {
+	defer conn.CloseWithError(0, "服务器关闭连接")
+	log.Printf("已接受来自 %s 的QUIC连接", conn.RemoteAddr().String())
 
-			// 持续接受该连接上的所有流
-			for {
-				// 接受连接上的数据流
-				stream, err := quicConn.AcceptStream(context.Background())
-				if err != nil {
-					// 如果接受数据流失败（可能是连接关闭），记录日志并退出
-					log.Printf("接受数据流失败: %v", err)
-					return
-				}
+	for {
+		stream, err := conn.AcceptStream(context.Background())
+		if err != nil {
+			log.Printf("接受QUIC流失败: %v", err)
+			return
+		}
 
-				// 为每个流启动独立的goroutine进行处理
-				go func(quicStream *quic.Stream) {
-					// 在函数退出时关闭流
-					defer quicStream.Close()
+		go s.handleStream(stream)
+	}
+}
 
-					// 创建QUIC流到gRPC的连接适配器
-					// 将QUIC流包装为gRPC可以使用的连接
-					// 注意：gRPC over QUIC的完整实现需要解析HTTP/2帧
-					// 这里先预留接口，后续实现完整的传输层
-					wrapper := &quicConnWrapper{
-						conn:   quicConn,
-						stream: quicStream,
-					}
+// handleStream 处理单个QUIC流：实现自定义RPC协议
+// 协议格式：4字节长度（大端序）+ protobuf消息
+func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
+	defer stream.Close()
 
-					// TODO: 实现完整的gRPC over QUIC协议处理
-					// 需要解析HTTP/2帧并调用gRPC服务处理器
-					// 当前先使用占位符，后续实现时会调用s.grpcServer.Serve()
-					_ = wrapper
-					_ = s.grpcServer
-				}(stream)
-			}
-		}(conn)
+	// 读取请求长度
+	var length [4]byte
+	if _, err := stream.Read(length[:]); err != nil {
+		log.Printf("读取消息长度失败: %v", err)
+		return
+	}
+
+	msgLen := int(binary.BigEndian.Uint32(length[:]))
+	if msgLen > 10*1024*1024 { // 限制10MB
+		log.Printf("消息过大: %d", msgLen)
+		return
+	}
+
+	// 读取protobuf消息
+	msgData := make([]byte, msgLen)
+	if _, err := io.ReadFull(stream, msgData); err != nil {
+		log.Printf("读取消息数据失败: %v", err)
+		return
+	}
+
+	// 解析请求
+	var req rpc.FetchRequest
+	if err := proto.Unmarshal(msgData, &req); err != nil {
+		log.Printf("解析请求失败: %v", err)
+		return
+	}
+
+	// 调用爬虫服务
+	ctx := context.Background()
+	resp, err := s.crawlerServer.Fetch(ctx, &req)
+	if err != nil {
+		resp = &rpc.FetchResponse{
+			Url:        req.Url,
+			StatusCode: 500,
+			Error:      err.Error(),
+		}
+	}
+
+	// 序列化响应
+	respData, err := proto.Marshal(resp)
+	if err != nil {
+		log.Printf("序列化响应失败: %v", err)
+		return
+	}
+
+	// 发送响应：长度 + 数据
+	respLen := uint32(len(respData))
+	binary.BigEndian.PutUint32(length[:], respLen)
+	if _, err := stream.Write(length[:]); err != nil {
+		log.Printf("发送响应长度失败: %v", err)
+		return
+	}
+	if _, err := stream.Write(respData); err != nil {
+		log.Printf("发送响应数据失败: %v", err)
+		return
 	}
 }
 
@@ -162,8 +180,5 @@ type quicConnWrapper struct {
 func (s *QuicRpcServer) Close() error {
 	// 记录关闭服务器的日志
 	log.Println("正在关闭 QUIC RPC 服务器")
-	// 停止gRPC服务器
-	s.grpcServer.Stop()
-	// 关闭QUIC监听器并返回可能的错误
 	return s.quicListener.Close()
 }

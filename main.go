@@ -44,27 +44,20 @@ func main() {
 		}
 	}
 
-	// 创建gRPC服务器实例
-	// NewGrpcServer函数会初始化标准HTTP/2 over TLS的gRPC服务器
-	grpcServer, err := server.NewGrpcServer()
-	if err != nil {
-		// 如果创建服务器失败，则记录错误日志并终止程序
-		log.Fatalf("创建 gRPC 服务器失败: %v", err)
-	}
-
 	// 创建爬虫服务实例（传入统计收集器）
-	// NewCrawlerServer函数返回一个实现了CrawlerServiceServer接口的实例
 	crawlerServer := server.NewCrawlerServer(stats)
 
-	// 注册爬虫服务到gRPC服务器
-	// 这样gRPC服务器就能处理针对CrawlerService的请求
+	// 使用QUIC协议（最快速度）
+	grpcServer, err := server.NewQuicRpcServer(crawlerServer)
+	if err != nil {
+		log.Fatalf("创建 QUIC 服务器失败: %v", err)
+	}
+
+	// 注册服务（QUIC模式下已在NewQuicRpcServer传入，此处保留用于兼容）
 	grpcServer.RegisterService(crawlerServer)
 
-	// 创建管理服务实例
-	adminServer := server.NewAdminServer(stats, log)
-
-	// 注册管理服务到gRPC服务器
-	grpcServer.RegisterAdminService(adminServer)
+	// 注意：QUIC模式下暂不支持管理服务（AdminServer）
+	// 如需管理功能，可单独启动一个gRPC over TCP的管理端口
 
 	// 启动服务（在独立的goroutine中运行）
 	// Serve方法会持续监听并处理客户端连接
