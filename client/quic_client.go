@@ -14,6 +14,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"google.golang.org/protobuf/proto"
 
+    "vps-rpc/config"
     "vps-rpc/rpc"
     "vps-rpc/proxy"
 )
@@ -49,8 +50,16 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
 		ipAddress = address
 	} else {
         // 是域名，快速解析为IP（收集v4/v6以做并行拨号）
-		// 使用适中的超时（3秒）平衡速度和可靠性
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		// 使用全局配置的客户端超时时间（通常较短，适合DNS解析）
+		// DNS解析使用连接超时的一半，避免占用太多时间
+		dnsTimeout := config.AppConfig.GetClientDefaultTimeout() / 2
+		if dnsTimeout < 1*time.Second {
+			dnsTimeout = 1 * time.Second // 最少1秒
+		}
+		if dnsTimeout > 5*time.Second {
+			dnsTimeout = 5 * time.Second // 最多5秒
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), dnsTimeout)
 		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 		cancel()
 		
@@ -87,15 +96,21 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
 	}
 
     // 使用Early连接以支持0-RTT（最快速度）
+	// 从全局配置读取QUIC参数，与服务器端保持一致
 	quicConfig := &quic.Config{
-		MaxIdleTimeout:       30 * time.Second,
-		HandshakeIdleTimeout: 5 * time.Second,
-		MaxIncomingStreams:   100,
+		MaxIdleTimeout:       config.AppConfig.GetQuicMaxIdleTimeout(),
+		HandshakeIdleTimeout: config.AppConfig.GetQuicHandshakeIdleTimeout(),
+		MaxIncomingStreams:   100, // 客户端不需要太多入站流
 	}
 
     // Happy Eyeballs：根据设备能力选择IPv4/IPv6，不支持IPv6时只尝试IPv4
-    // 增加超时时间以适应高延迟网络环境（20秒）
-    ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+    // 使用全局配置的客户端连接超时时间（而不是硬编码）
+    connectTimeout := config.AppConfig.GetClientDefaultTimeout()
+    // 如果配置的超时时间过短（小于5秒），则使用更合理的超时（15秒）以适应高延迟网络
+    if connectTimeout < 5*time.Second {
+        connectTimeout = 15 * time.Second
+    }
+    ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
     defer cancel()
     type dialResult struct{ conn *quic.Conn; err error }
     resCh := make(chan dialResult, 2)
@@ -162,8 +177,12 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
             // 如果IPv4地址可用，立即尝试IPv4（使用新的context，避免使用已接近超时的context）
             if ip4Address != "" {
                 log.Printf("[quic-client] IPv6连接失败 (%v)，立即回退到IPv4: %s", r.err, ip4Address)
-                // 创建新的context，给IPv4连接足够的超时时间
-                ctxV4, cancelV4 := context.WithTimeout(context.Background(), 15*time.Second)
+                // 创建新的context，使用全局配置的超时时间
+                fallbackTimeout := config.AppConfig.GetClientDefaultTimeout()
+                if fallbackTimeout < 10*time.Second {
+                    fallbackTimeout = 10 * time.Second // 回退连接至少给10秒
+                }
+                ctxV4, cancelV4 := context.WithTimeout(context.Background(), fallbackTimeout)
                 if c4, e4 := quic.DialAddrEarly(ctxV4, ip4Address, tlsConfig, quicConfig); e4 == nil {
                     cancelV4()
                     conn = c4
@@ -186,7 +205,11 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
         // 如果IPv6失败且IPv4可用但未尝试，强制使用IPv4（使用新context）
         if ip6Failed && ip4Address != "" && ipAddress == ip6Address {
             log.Printf("[quic-client] 强制使用IPv4连接: %s", ip4Address)
-            ctxV4, cancelV4 := context.WithTimeout(context.Background(), 15*time.Second)
+            fallbackTimeout := config.AppConfig.GetClientDefaultTimeout()
+            if fallbackTimeout < 10*time.Second {
+                fallbackTimeout = 10 * time.Second
+            }
+            ctxV4, cancelV4 := context.WithTimeout(context.Background(), fallbackTimeout)
             if c4, e4 := quic.DialAddrEarly(ctxV4, ip4Address, tlsConfig, quicConfig); e4 == nil {
                 cancelV4()
                 conn = c4
@@ -199,7 +222,11 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
         
         // 最后兜底：尝试原始地址（可能是域名或IPv4，使用新context）
         if conn == nil {
-            ctxFallback, cancelFallback := context.WithTimeout(context.Background(), 15*time.Second)
+            fallbackTimeout := config.AppConfig.GetClientDefaultTimeout()
+            if fallbackTimeout < 10*time.Second {
+                fallbackTimeout = 10 * time.Second
+            }
+            ctxFallback, cancelFallback := context.WithTimeout(context.Background(), fallbackTimeout)
             if c2, e2 := quic.DialAddrEarly(ctxFallback, ipAddress, tlsConfig, quicConfig); e2 == nil {
                 cancelFallback()
                 conn = c2
