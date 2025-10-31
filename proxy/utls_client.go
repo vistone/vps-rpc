@@ -279,6 +279,10 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
     var selectedIP string
     var selectedIsV6 bool
     if c.dns != nil {
+        // 自动注册域名到ProbeManager进行定期探测
+        if pm := GetGlobalProbeManager(); pm != nil {
+            pm.RegisterDomain(host)
+        }
         if ip, isV6, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
             selectedIP = ip
             selectedIsV6 = isV6

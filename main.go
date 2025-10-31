@@ -39,6 +39,7 @@ func main() {
 		if p, err := proxy.NewDNSPool(config.AppConfig.DNS.DBPath); err == nil {
 			proxy.SetGlobalDNSPool(p)
 			probe = proxy.NewProbeManager(p)
+			proxy.SetGlobalProbeManager(probe) // 设置全局ProbeManager
 			defer probe.Close()
 		}
 	}
