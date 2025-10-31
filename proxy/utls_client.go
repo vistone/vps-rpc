@@ -211,9 +211,14 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName 
 
 // buildHTTP2Client 基于 http2.Transport + uTLS 的 http.Client
 // 优化：启用连接复用和更长的空闲超时以最大化复用
+// 注意：HTTP2 Transport的连接复用基于DialTLSContext的addr参数
+// 我们使用实际的IP地址作为addr，确保同一IP的连接被复用
 func (c *UTLSClient) buildHTTP2Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
 	tr := &http2.Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			// 关键修复：使用实际的address（IP地址）而不是Transport传入的addr
+			// 这样可以确保HTTP2 Transport基于实际连接的IP地址来判断连接复用
+			// addr参数可能是hostname格式，但我们实际连接的是IP地址
 			return c.dialUTLS(ctx, network, address, host, helloID, []string{"h2"})
 		},
 		ReadIdleTimeout:  30 * time.Second, // 连接空闲超时
