@@ -194,22 +194,33 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 		log.Printf("[quic-rpc] URL=%s, 服务处理=%v, 总计=%v", fetchReq.Url, quicRpcLatency, quicRpcLatency)
     } else if s.peerServer != nil {
 		// 尝试解析为PeerService相关请求
-		// ExchangeDNSRequest: 有records字段（即使是空的map也是有效的ExchangeDNSRequest）
-        var exchangeDNSReq rpc.ExchangeDNSRequest
-        if err := proto.Unmarshal(msgData, &exchangeDNSReq); err == nil {
-            // ExchangeDNSRequest 识别：即使 Records 为空，只要有这个结构就是 ExchangeDNSRequest
-            // 学到对端地址
-            if conn != nil {
-                if ps, ok := s.peerServer.(*PeerServiceServer); ok {
-                    rhost, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-                    if rhost != "" {
-                        ps.AddKnownPeer(net.JoinHostPort(rhost, fmt.Sprintf("%d", config.AppConfig.Server.Port)))
-                    }
-                }
-            }
-			resp, err := s.peerServer.ExchangeDNS(ctx, &exchangeDNSReq)
+		// 注意：protobuf 空消息可能被多种类型解析成功，需要更严格的识别逻辑
+		
+		// 首先尝试解析为 ReportNodeRequest（有 address 字段，最容易识别）
+		var reportNodeReq rpc.ReportNodeRequest
+		if err := proto.Unmarshal(msgData, &reportNodeReq); err == nil && reportNodeReq.Address != "" {
+			// 确认是 ReportNodeRequest（必须有 address 字段）
+			if conn != nil {
+				if ps, ok := s.peerServer.(*PeerServiceServer); ok {
+					rhost, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+					if rhost != "" {
+						ps.AddKnownPeer(net.JoinHostPort(rhost, fmt.Sprintf("%d", config.AppConfig.Server.Port)))
+					}
+				}
+			}
+			if reportNodeReq.Address == "" && conn != nil {
+				rhost, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+				if rhost != "" {
+					reportNodeReq.Address = net.JoinHostPort(rhost, fmt.Sprintf("%d", config.AppConfig.Server.Port))
+				}
+			}
+			if reportNodeReq.Address == "" {
+				log.Printf("ReportNode缺少address，忽略")
+				return
+			}
+			resp, err := s.peerServer.ReportNode(ctx, &reportNodeReq)
 			if err != nil {
-				log.Printf("ExchangeDNS失败: %v", err)
+				log.Printf("ReportNode失败: %v", err)
 				return
 			}
 			respData, err = proto.Marshal(resp)
@@ -217,11 +228,38 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 				log.Printf("序列化响应失败: %v", err)
 				return
 			}
-            log.Printf("[quic-rpc] ExchangeDNS: 本地=%d, 远程=%d", len(exchangeDNSReq.Records), len(resp.Records))
+			log.Printf("[quic-rpc] ReportNode: %s", reportNodeReq.Address)
 		} else {
-			// GetPeersRequest: 空消息
-            var getPeersReq rpc.GetPeersRequest
-			if err := proto.Unmarshal(msgData, &getPeersReq); err == nil {
+			// 然后尝试解析为 ExchangeDNSRequest（有 records 字段，即使是空的）
+			// 关键：ExchangeDNSRequest 有字段编号1（records map），即使为空也可能有wire format
+			var exchangeDNSReq rpc.ExchangeDNSRequest
+			if err := proto.Unmarshal(msgData, &exchangeDNSReq); err == nil {
+				// ExchangeDNSRequest：总是接受（即使 records 为空也是有效的 ExchangeDNS 请求）
+				// 学到对端地址
+				if conn != nil {
+					if ps, ok := s.peerServer.(*PeerServiceServer); ok {
+						rhost, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+						if rhost != "" {
+							ps.AddKnownPeer(net.JoinHostPort(rhost, fmt.Sprintf("%d", config.AppConfig.Server.Port)))
+						}
+					}
+				}
+				resp, err := s.peerServer.ExchangeDNS(ctx, &exchangeDNSReq)
+				if err != nil {
+					log.Printf("ExchangeDNS失败: %v", err)
+					return
+				}
+				respData, err = proto.Marshal(resp)
+				if err != nil {
+					log.Printf("序列化响应失败: %v", err)
+					return
+				}
+				log.Printf("[quic-rpc] ExchangeDNS: 本地=%d, 远程=%d", len(exchangeDNSReq.Records), len(resp.Records))
+			} else {
+				// GetPeersRequest: 空消息（完全没有字段）
+				// 只有在其他类型都解析失败时，才尝试 GetPeersRequest
+				var getPeersReq rpc.GetPeersRequest
+				if err := proto.Unmarshal(msgData, &getPeersReq); err == nil {
                 // 学到对端地址
                 if conn != nil {
                     if ps, ok := s.peerServer.(*PeerServiceServer); ok {
@@ -242,32 +280,6 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 					return
 				}
 				log.Printf("[quic-rpc] GetPeers: %d个节点", len(resp.Peers))
-			} else {
-				// ReportNodeRequest: 有address字段
-            var reportNodeReq rpc.ReportNodeRequest
-            if err := proto.Unmarshal(msgData, &reportNodeReq); err == nil {
-                // 若对方未提供地址，自动根据远端IP和本服务端口生成 <remoteIP>:<server.port>
-                if reportNodeReq.Address == "" && conn != nil {
-                    rhost, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-                    if rhost != "" {
-                        reportNodeReq.Address = net.JoinHostPort(rhost, fmt.Sprintf("%d", config.AppConfig.Server.Port))
-                    }
-                }
-                if reportNodeReq.Address == "" {
-                    log.Printf("ReportNode缺少address，忽略")
-                    return
-                }
-					resp, err := s.peerServer.ReportNode(ctx, &reportNodeReq)
-					if err != nil {
-						log.Printf("ReportNode失败: %v", err)
-						return
-					}
-					respData, err = proto.Marshal(resp)
-					if err != nil {
-						log.Printf("序列化响应失败: %v", err)
-						return
-					}
-					log.Printf("[quic-rpc] ReportNode: %s", reportNodeReq.Address)
 				} else {
 					log.Printf("无法识别的请求类型（msgLen=%d，已尝试所有PeerService类型）", msgLen)
 					// 对于无法识别的请求，返回一个空的 ExchangeDNSResponse，而不是不发送响应
