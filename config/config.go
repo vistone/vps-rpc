@@ -159,6 +159,8 @@ type AdminConfig struct {
 type PeerConfig struct {
 	// Seeds 自举种子列表（域名或 IP:端口）
 	Seeds []string `toml:"seeds"`
+    // MyAddr 本节点对外可达地址（host:port），用于向对端上报
+    MyAddr string `toml:"my_addr"`
 }
 
 // AppConfig 全局配置变量

@@ -59,23 +59,22 @@ func (s *PeerServiceServer) ExchangeDNS(ctx context.Context, req *rpc.ExchangeDN
 
 // GetPeers 获取已知对等节点列表
 func (s *PeerServiceServer) GetPeers(ctx context.Context, req *rpc.GetPeersRequest) (*rpc.GetPeersResponse, error) {
-	// 返回配置中的seeds和自己的地址
-	peers := []string{}
-	
-	// 添加配置中的seeds
-	for _, seed := range config.AppConfig.Peer.Seeds {
-		if !s.knownPeers[seed] {
-			s.knownPeers[seed] = true
-		}
-		peers = append(peers, seed)
-	}
-	
-	// 添加其他已知的peers
-	for peer := range s.knownPeers {
-		peers = append(peers, peer)
-	}
-
-	return &rpc.GetPeersResponse{Peers: peers}, nil
+    // 返回去重后的种子+已知节点全集
+    uniq := map[string]bool{}
+    // seeds
+    for _, seed := range config.AppConfig.Peer.Seeds {
+        if seed == "" { continue }
+        uniq[seed] = true
+        s.knownPeers[seed] = true
+    }
+    // known
+    for p := range s.knownPeers {
+        if p == "" { continue }
+        uniq[p] = true
+    }
+    out := make([]string, 0, len(uniq))
+    for p := range uniq { out = append(out, p) }
+    return &rpc.GetPeersResponse{Peers: out}, nil
 }
 
 // ReportNode 上报节点信息（用于发现新节点）
