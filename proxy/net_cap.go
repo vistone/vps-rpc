@@ -28,7 +28,10 @@ func HasIPv6() bool {
         addrs, _ := iface.Addrs()
         for _, a := range addrs {
             ip, _, _ := net.ParseCIDR(a.String())
-            if ip != nil && ip.To4() == nil { return true }
+            if ip == nil || ip.To4() != nil { continue }
+            // 只把“全局单播”视为可用IPv6：排除环回与链路本地（fe80::/10）
+            if ip.IsLoopback() || ip.IsLinkLocalUnicast() { continue }
+            return true
         }
     }
     return false
