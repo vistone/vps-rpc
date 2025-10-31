@@ -392,6 +392,18 @@ func (p *DNSPool) ReportResult(domain, ip string, status int) error {
     }
     if rec.Blacklist == nil { rec.Blacklist = map[string]bool{} }
     if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
+    // 确保观测到的IP被纳入记录
+    if net.ParseIP(ip) != nil && net.ParseIP(ip).To4() == nil {
+        // IPv6
+        present := false
+        for _, v := range rec.IPv6 { if v == ip { present = true; break } }
+        if !present { rec.IPv6 = append(rec.IPv6, ip) }
+    } else {
+        // IPv4 或未知按v4处理
+        present := false
+        for _, v := range rec.IPv4 { if v == ip { present = true; break } }
+        if !present { rec.IPv4 = append(rec.IPv4, ip) }
+    }
     if status == 403 {
         rec.Blacklist[ip] = true
         delete(rec.Whitelist, ip)

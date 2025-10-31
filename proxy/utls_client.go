@@ -195,11 +195,17 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName 
 	if len(nextProtos) > 0 {
 		ucfg.NextProtos = nextProtos
 	}
-	uconn := utls.UClient(tcpConn, ucfg, *helloID)
+    uconn := utls.UClient(tcpConn, ucfg, *helloID)
 	if err := uconn.HandshakeContext(ctx); err != nil {
 		tcpConn.Close()
 		return nil, fmt.Errorf("握手失败: %w", err)
 	}
+    // 将实际连接到的远端IP加入DNS池（即便本次是域名拨号）
+    if c.dns != nil && serverName != "" {
+        if ra, ok := tcpConn.RemoteAddr().(*net.TCPAddr); ok && ra != nil && ra.IP != nil {
+            _ = c.dns.ReportResult(serverName, ra.IP.String(), 200)
+        }
+    }
 	return uconn, nil
 }
 
