@@ -252,16 +252,31 @@ func (p *PeerSyncManager) periodicSync() {
 	defer ticker.Stop()
 
 	// 首次同步
-	p.syncWithSeeds()
+    p.syncAll()
 
 	for {
 		select {
 		case <-p.closed:
 			return
 		case <-ticker.C:
-			p.syncWithSeeds()
+            p.syncAll()
 		}
 	}
+}
+
+// syncAll 同步 seeds 与 当前已知的所有 peers（去中心化扩散）
+func (p *PeerSyncManager) syncAll() {
+    p.syncWithSeeds()
+    // 同步已知peers
+    p.mu.RLock()
+    peers := make([]string, 0, len(p.knownPeers))
+    for addr := range p.knownPeers {
+        peers = append(peers, addr)
+    }
+    p.mu.RUnlock()
+    for _, addr := range peers {
+        go p.syncWithPeer(addr)
+    }
 }
 
 // syncWithSeeds 与种子节点同步
