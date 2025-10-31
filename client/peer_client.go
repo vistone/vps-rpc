@@ -204,6 +204,9 @@ type PeerSyncManager struct {
     lastSeen     map[string]time.Time
     failCount    map[string]int
     syncing      map[string]bool
+    selfIPs      map[string]bool   // 本机所有接口IP（字符串）
+    selfAddrs    map[string]bool   // 本机可视为自身的 host:port 列表
+    serverPort   int               // 本机服务端口
 	mu           sync.RWMutex
 	wg           sync.WaitGroup
 	closed       chan struct{}
@@ -211,14 +214,57 @@ type PeerSyncManager struct {
 
 // NewPeerSyncManager 创建peer同步管理器
 func NewPeerSyncManager() *PeerSyncManager {
-	return &PeerSyncManager{
+    p := &PeerSyncManager{
 		knownPeers:  make(map[string]bool),
 		peerClients: make(map[string]*PeerClient),
         lastSeen:    make(map[string]time.Time),
         failCount:   make(map[string]int),
         syncing:     make(map[string]bool),
-		closed:      make(chan struct{}),
-	}
+        selfIPs:     make(map[string]bool),
+        selfAddrs:   make(map[string]bool),
+        serverPort:  config.AppConfig.Server.Port,
+        closed:      make(chan struct{}),
+    }
+    // 采集本机接口IP
+    if addrs, err := net.InterfaceAddrs(); err == nil {
+        for _, a := range addrs {
+            var ip net.IP
+            switch v := a.(type) {
+            case *net.IPNet:
+                ip = v.IP
+            case *net.IPAddr:
+                ip = v.IP
+            }
+            if ip == nil {
+                continue
+            }
+            ip = ip.To4()
+            if ip == nil {
+                // 保留IPv6字符串
+                ip = ip
+            }
+            p.selfIPs[ip.String()] = true
+            // 生成 host:port 形式
+            host := ip.String()
+            if strings.Contains(host, ":") {
+                host = "[" + host + "]"
+            }
+            p.selfAddrs[net.JoinHostPort(host, fmt.Sprintf("%d", p.serverPort))] = true
+        }
+    }
+    // 如配置了 my_addr，也视为自身
+    if my := config.AppConfig.Peer.MyAddr; my != "" {
+        p.selfAddrs[my] = true
+        h, _, err := net.SplitHostPort(my)
+        if err == nil {
+            if ips, err2 := net.LookupIP(h); err2 == nil {
+                for _, ip := range ips {
+                    p.selfIPs[ip.String()] = true
+                }
+            }
+        }
+    }
+    return p
 }
 
 // Start 启动peer同步管理器
@@ -314,6 +360,10 @@ func (p *PeerSyncManager) syncWithSeeds() {
 
 // syncWithPeer 与指定peer同步
 func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
+    // 跳过自身地址（避免自连）
+    if p.isSelfPeer(peerAddr) {
+        return
+    }
     // 避免同一peer的同步重入（周期短导致叠加）
     p.mu.Lock()
     if p.syncing[peerAddr] {
@@ -449,6 +499,34 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
     }
 
     log.Printf("[peer-sync] 与 %s 同步完成，本次返回=%d，当前已知节点总数=%d", peerAddr, len(peers), total)
+}
+
+// isSelfPeer 判断目标地址是否为本机（解析IP后与本机接口比对，且端口等于本端口）
+func (p *PeerSyncManager) isSelfPeer(addr string) bool {
+    if addr == "" {
+        return true
+    }
+    if p.selfAddrs[addr] {
+        return true
+    }
+    host, port, err := net.SplitHostPort(addr)
+    if err != nil {
+        return false
+    }
+    if port != fmt.Sprintf("%d", p.serverPort) {
+        return false
+    }
+    // 解析host对应的IP
+    ips, err := net.LookupIP(host)
+    if err != nil || len(ips) == 0 {
+        return false
+    }
+    for _, ip := range ips {
+        if p.selfIPs[ip.String()] {
+            return true
+        }
+    }
+    return false
 }
 
 // isTimeoutErr 判断是否为空闲/超时类错误
