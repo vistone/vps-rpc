@@ -359,8 +359,9 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
     // 自动打印本次从该节点获取到的peers结果
     log.Printf("[peer-sync] 来自 %s 的已知节点: %v", peerAddr, peers)
 
-    // 自广播：将本节点对外地址上报给当前peer，便于对方纳入视图
-    if my := config.AppConfig.Peer.MyAddr; my != "" {
+    // 自广播：上报本节点地址；当未配置时发送空字符串，由服务端基于连接远端地址自动推断
+    {
+        my := config.AppConfig.Peer.MyAddr // 可为空
         ctxR, cancelR := context.WithTimeout(context.Background(), 5*time.Second)
         _ = client.ReportNode(ctxR, my)
         cancelR()
