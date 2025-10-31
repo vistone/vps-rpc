@@ -201,6 +201,8 @@ type PeerSyncManager struct {
 	dnsPool      interface{} // 避免循环依赖，使用interface{}
 	knownPeers   map[string]bool
 	peerClients  map[string]*PeerClient
+    lastSeen     map[string]time.Time
+    failCount    map[string]int
 	mu           sync.RWMutex
 	wg           sync.WaitGroup
 	closed       chan struct{}
@@ -211,6 +213,8 @@ func NewPeerSyncManager() *PeerSyncManager {
 	return &PeerSyncManager{
 		knownPeers:  make(map[string]bool),
 		peerClients: make(map[string]*PeerClient),
+        lastSeen:    make(map[string]time.Time),
+        failCount:   make(map[string]int),
 		closed:      make(chan struct{}),
 	}
 }
@@ -320,11 +324,24 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
     if err != nil {
         if isTimeoutErr(err) {
             log.Printf("[debug][peer-sync] 获取peers超时 %s: %v", peerAddr, err)
+            // 统计失败次数并判定下线
+            p.mu.Lock()
+            p.failCount[peerAddr]++
+            fc := p.failCount[peerAddr]
+            p.mu.Unlock()
+            if fc >= 3 { // 连续3次失败判定离线
+                log.Printf("[peer-sync] 节点疑似离线: %s (连续超时=%d)", peerAddr, fc)
+            }
         } else {
             log.Printf("[peer-sync] 获取peers失败 %s: %v", peerAddr, err)
         }
         return
     }
+    // 成功，重置失败计数并更新最后活跃
+    p.mu.Lock()
+    p.failCount[peerAddr] = 0
+    p.lastSeen[peerAddr] = time.Now()
+    p.mu.Unlock()
     // 自动打印本次从该节点获取到的peers结果
     log.Printf("[peer-sync] 来自 %s 的已知节点: %v", peerAddr, peers)
 
