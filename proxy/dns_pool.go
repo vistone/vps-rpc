@@ -33,6 +33,8 @@ type dnsRecord struct {
 	// EWMA 时延（毫秒）用于自适应族选择（0 表示未知）
 	EwmaLatency4 float64 `json:"ewma_latency4"`
 	EwmaLatency6 float64 `json:"ewma_latency6"`
+	// IPLatency 每个IP的EWMA延迟（毫秒），用于自动过滤慢IP
+	IPLatency map[string]float64 `json:"ip_latency,omitempty"`
 }
 
 type DNSPool struct {
@@ -102,6 +104,7 @@ func (p *DNSPool) loadFromDisk() error {
     for _, rec := range p.records {
         if rec.Blacklist == nil { rec.Blacklist = map[string]bool{} }
         if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
+        if rec.IPLatency == nil { rec.IPLatency = map[string]float64{} }
         // 将白名单中的IP并入 IPv4/IPv6 列表，保证可选候选包含白名单
         if len(rec.Whitelist) > 0 {
             present4 := map[string]struct{}{}
@@ -623,17 +626,46 @@ func (p *DNSPool) ReportResult(domain, ip string, status int) error {
     return p.persist()
 }
 
-// ReportLatency 上报请求耗时（毫秒），用于更新 EWMA
+// ReportLatency 上报请求耗时（毫秒），用于更新每个IP的EWMA延迟并自动过滤慢IP
 func (p *DNSPool) ReportLatency(domain, ip string, ms int64) error {
     if p == nil || ip == "" || domain == "" || ms <= 0 { return nil }
     const alpha = 0.3
+    const maxLatencyThreshold = 100.0 // 超过100ms的IP会被临时跳过
     p.mu.Lock()
     rec, ok := p.records[domain]
     if !ok {
-        rec = &dnsRecord{Domain: domain}
+        rec = &dnsRecord{Domain: domain, IPLatency: make(map[string]float64)}
         p.records[domain] = rec
     }
+    if rec.IPLatency == nil {
+        rec.IPLatency = make(map[string]float64)
+    }
+    if rec.Blacklist == nil {
+        rec.Blacklist = make(map[string]bool)
+    }
+    if rec.Whitelist == nil {
+        rec.Whitelist = make(map[string]bool)
+    }
     val := float64(ms)
+    // 更新该IP的EWMA延迟
+    if rec.IPLatency[ip] == 0 {
+        rec.IPLatency[ip] = val
+    } else {
+        rec.IPLatency[ip] = alpha*val + (1-alpha)*rec.IPLatency[ip]
+    }
+    // 如果延迟超过阈值，临时加入黑名单（但仍保留在列表中，等待改善后自动恢复）
+    if rec.IPLatency[ip] > maxLatencyThreshold {
+        if !rec.Blacklist[ip] {
+            rec.Blacklist[ip] = true
+            log.Printf("[dns-pool] IP %s 延迟 %.1fms 超过阈值，临时加入黑名单", ip, rec.IPLatency[ip])
+        }
+    } else if rec.Blacklist[ip] && rec.IPLatency[ip] <= maxLatencyThreshold*0.8 {
+        // 延迟降低到阈值的80%以下时，自动从黑名单移除
+        delete(rec.Blacklist, ip)
+        rec.Whitelist[ip] = true
+        log.Printf("[dns-pool] IP %s 延迟改善到 %.1fms，从黑名单恢复", ip, rec.IPLatency[ip])
+    }
+    // 同时更新族级别的EWMA（兼容旧逻辑）
     if net.ParseIP(ip) != nil && net.ParseIP(ip).To4() == nil {
         if rec.EwmaLatency6 == 0 { rec.EwmaLatency6 = val } else { rec.EwmaLatency6 = alpha*val + (1-alpha)*rec.EwmaLatency6 }
     } else {
