@@ -400,7 +400,13 @@ func max(a, b int) int { if a > b { return a }; return b }
 
 // MergeFromPeer 将对等节点返回的DNS记录合并入本地数据库（仅合并IPv4/IPv6，忽略黑白名单）
 func (p *DNSPool) MergeFromPeer(records map[string]*rpc.DNSRecord) error {
-    if p == nil || len(records) == 0 { return nil }
+    if p == nil || len(records) == 0 { 
+        log.Printf("[dns-pool] MergeFromPeer: 无记录可合并 (records=%d)", len(records))
+        return nil 
+    }
+    log.Printf("[dns-pool] MergeFromPeer: 开始合并 %d 个域的DNS记录", len(records))
+    mergedCount := 0
+    totalIPs := 0
     p.mu.Lock()
     for domain, r := range records {
         if r == nil { continue }
@@ -437,9 +443,17 @@ func (p *DNSPool) MergeFromPeer(records map[string]*rpc.DNSRecord) error {
             }
         }
         rec.UpdatedAt = time.Now().Unix()
+        mergedCount++
+        totalIPs += len(rec.IPv4) + len(rec.IPv6)
     }
+    finalRecordCount := len(p.records)
     p.mu.Unlock()
-    return p.persist()
+    log.Printf("[dns-pool] MergeFromPeer: 合并完成，更新了 %d 个域，新增/合并了 %d 个IP，当前总记录数=%d", mergedCount, totalIPs, finalRecordCount)
+    if err := p.persist(); err != nil {
+        log.Printf("[dns-pool] MergeFromPeer: persist失败: %v", err)
+        return err
+    }
+    return nil
 }
 
 func (p *DNSPool) get(domain string) (*dnsRecord, error) {
@@ -496,10 +510,14 @@ func (p *DNSPool) GetIPs(ctx context.Context, domain string) (ipv4 []string, ipv
 
 // GetAllDomainsAndIPs 返回所有域名的所有IP地址（用于预建连接池）
 // 返回值: map[domain][]{ip:port}
+// 根据设备能力过滤：仅IPv4设备不返回IPv6地址，仅IPv6设备不返回IPv4地址
 func (p *DNSPool) GetAllDomainsAndIPs() map[string][]string {
 	if p == nil {
 		return nil
 	}
+	allowV4 := HasIPv4()
+	allowV6 := HasIPv6()
+	
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	result := make(map[string][]string)
@@ -508,23 +526,40 @@ func (p *DNSPool) GetAllDomainsAndIPs() map[string][]string {
 			continue
 		}
 		ips := make([]string, 0)
-		// 收集所有IPv4和IPv6（排除黑名单）
-		for _, ip := range rec.IPv4 {
-			if !rec.Blacklist[ip] {
-				ips = append(ips, net.JoinHostPort(ip, "443"))
+		
+		// 根据设备能力收集IP：仅支持IPv4时只收集IPv4，仅支持IPv6时只收集IPv6
+		if allowV4 {
+			// 收集IPv4（排除黑名单）
+			for _, ip := range rec.IPv4 {
+				if !rec.Blacklist[ip] {
+					ips = append(ips, net.JoinHostPort(ip, "443"))
+				}
 			}
 		}
-		for _, ip := range rec.IPv6 {
-			if !rec.Blacklist[ip] {
-				ips = append(ips, net.JoinHostPort(ip, "443"))
+		if allowV6 {
+			// 收集IPv6（排除黑名单）
+			for _, ip := range rec.IPv6 {
+				if !rec.Blacklist[ip] {
+					ips = append(ips, net.JoinHostPort(ip, "443"))
+				}
 			}
 		}
-		// 合并白名单IP
+		
+		// 合并白名单IP（根据设备能力过滤）
 		for ip := range rec.Whitelist {
 			parsed := net.ParseIP(ip)
 			if parsed == nil {
 				continue
 			}
+			isV6 := parsed.To4() == nil
+			// 仅IPv4设备不预热IPv6，仅IPv6设备不预热IPv4
+			if isV6 && !allowV6 {
+				continue // 不支持IPv6，跳过IPv6地址
+			}
+			if !isV6 && !allowV4 {
+				continue // 不支持IPv4，跳过IPv4地址
+			}
+			
 			addr := net.JoinHostPort(ip, "443")
 			// 去重
 			exists := false
