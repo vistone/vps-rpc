@@ -90,6 +90,9 @@ type DNSConfig struct {
     Resolvers []string `toml:"resolvers"`
     // PreferIPv6 当设备支持IPv6时优先走IPv6
     PreferIPv6 bool `toml:"prefer_ipv6"`
+    // ForceIPv6Source 强制所有连接都使用IPv6源地址（即使目标是IPv4）
+    // 仅在系统支持IPv6隧道或NAT64时有效
+    ForceIPv6Source bool `toml:"force_ipv6_source"`
 }
 
 // TLSConfig TLS配置

@@ -67,7 +67,11 @@ max_log_lines = 1000
 enabled = true
 db_path = "./dns_pool.json"   # JSON 文件路径（或目录），不再使用 bbolt
 refresh_interval = "24h"
-blacklist_duration = "6h"  # 兼容字段：当前实现为“无过期黑名单”，该字段当前不生效
+blacklist_duration = "6h"  # 兼容字段：当前实现为"无过期黑名单"，该字段当前不生效
+# 强制使用IPv6源地址（即使是IPv4目标），仅在系统支持IPv6隧道/NAT64时有效
+# 默认false：IPv6目标用IPv6源，IPv4目标不绑定（系统自动选择）
+# 设置为true：所有连接都轮询使用IPv6源地址
+force_ipv6_source = false
 
 [peer]
 # 种子节点（公网可达，域名或 IP:端口）。1-3 个即可

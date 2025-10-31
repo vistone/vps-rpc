@@ -376,11 +376,31 @@ func (c *UTLSClient) getClientHelloID() *utls.ClientHelloID {
 // dialUTLS 使用 uTLS 完成 TLS 握手并返回连接
 func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName string, helloID *utls.ClientHelloID, nextProtos []string) (net.Conn, error) {
 	d := &net.Dialer{Timeout: c.config.Timeout}
-	// 只有在目标是IPv6地址时，才从本机IPv6池轮询一个源地址进行绑定
-	// IPv4目标不应该绑定IPv6源地址，否则会导致路由问题
 	host, _, _ := net.SplitHostPort(address)
-	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-		// 目标是IPv6地址，轮询使用本机IPv6源地址进行负载分散
+	targetIP := net.ParseIP(host)
+	
+	// 判断是否应该绑定IPv6源地址
+	shouldBindIPv6 := false
+	if targetIP != nil {
+		if targetIP.To4() == nil {
+			// 目标是IPv6地址，总是绑定IPv6源地址
+			shouldBindIPv6 = true
+		} else {
+			// 目标是IPv4地址：检查配置是否强制使用IPv6源地址
+			if configPkg.AppConfig.DNS.ForceIPv6Source && HasIPv6() {
+				// 配置强制使用IPv6源，且系统支持IPv6（可能通过隧道访问IPv4）
+				shouldBindIPv6 = true
+			}
+		}
+	} else {
+		// 目标是域名：根据配置决定
+		if configPkg.AppConfig.DNS.ForceIPv6Source && HasIPv6() {
+			shouldBindIPv6 = true
+		}
+	}
+	
+	// 轮询使用IPv6源地址进行负载分散
+	if shouldBindIPv6 {
 		if src := NextIPv6LocalAddr(); src != nil {
 			d.LocalAddr = &net.TCPAddr{IP: src}
 		}
