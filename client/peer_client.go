@@ -77,9 +77,30 @@ func (c *PeerClient) ExchangeDNS(ctx context.Context, req *rpc.ExchangeDNSReques
 		return nil, fmt.Errorf("读取响应失败: %w", err)
 	}
 
+	// 调试：记录响应数据的前几个字节，帮助诊断问题
+	if len(respData) > 0 {
+		hexPrefix := ""
+		maxBytes := 16
+		if len(respData) < maxBytes {
+			maxBytes = len(respData)
+		}
+		for i := 0; i < maxBytes; i++ {
+			hexPrefix += fmt.Sprintf("%02x ", respData[i])
+		}
+		log.Printf("[peer-client] ExchangeDNS响应: len=%d, 前%d字节(hex)=%s", len(respData), maxBytes, hexPrefix)
+	} else {
+		log.Printf("[peer-client] ExchangeDNS响应: 空响应")
+	}
+
 	var resp rpc.ExchangeDNSResponse
 	if err := proto.Unmarshal(respData, &resp); err != nil {
-		return nil, fmt.Errorf("反序列化响应失败: %w", err)
+		// 尝试诊断：可能是返回了错误的消息类型
+		var getPeersResp rpc.GetPeersResponse
+		if err2 := proto.Unmarshal(respData, &getPeersResp); err2 == nil {
+			log.Printf("[peer-client] 错误：服务器返回了 GetPeersResponse 而不是 ExchangeDNSResponse (peers=%d)", len(getPeersResp.Peers))
+			return nil, fmt.Errorf("服务器返回了错误的消息类型（GetPeersResponse而非ExchangeDNSResponse）")
+		}
+		return nil, fmt.Errorf("反序列化响应失败: %w (响应长度=%d)", err, len(respData))
 	}
 
 	return &resp, nil
