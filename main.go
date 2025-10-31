@@ -33,6 +33,13 @@ func main() {
 	version := config.AppConfig.GetAdminVersion()
 	log.Infof("正在启动 VPS-RPC 爬虫代理服务器... 版本: %s", version)
 
+	// 启动时自检网络族能力，并声明抓取模式
+	if proxy.HasIPv6() {
+		log.Infof("网络栈: IPv6 可用 -> 启用 IPv4+IPv6 混合请求模式（先到先得）")
+	} else {
+		log.Infof("网络栈: IPv6 不可用 -> 仅使用 IPv4 模式")
+	}
+
 	// 创建统计收集器
 	stats := server.NewStatsCollector()
 
