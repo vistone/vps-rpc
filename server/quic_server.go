@@ -235,20 +235,20 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 			log.Printf("[quic-rpc] ReportNode: %s", reportNodeReq.Address)
 		} else {
 			// 然后尝试解析为 ExchangeDNSRequest（有 records 字段，即使是空的）
-			// 关键问题：空的 ExchangeDNSRequest 序列化后也是空字节（len=0），
-			// 无法与 GetPeersRequest 区分。protobuf 的 Unmarshal 对空字节，
-			// 两种类型都能成功解析，无法通过解析结果区分。
-			// 
-			// 解决方案：对于 msgLen == 0 的情况，我们需要根据"语义"来判断：
-			// - 如果客户端调用 ExchangeDNS()，即使 records 为空，也应该是 ExchangeDNSRequest
-			// - 如果客户端调用 GetPeers()，才是 GetPeersRequest
-			// 
-			// 由于我们无法从协议层面区分，只能采用启发式方法：
-			// 优先识别为 ExchangeDNSRequest（因为这是更常见的操作，而且误识别影响较小）
+			// 关键修复：客户端现在会在空的 ExchangeDNSRequest 前添加类型标记 0x01
+			// 如果 msgLen == 1 且第一个字节是 0x01，这是空的 ExchangeDNSRequest
 			var exchangeDNSReq rpc.ExchangeDNSRequest
-			unmarshalErr := proto.Unmarshal(msgData, &exchangeDNSReq)
-			// 关键：对于 msgLen == 0，protobuf 会成功解析，但我们需要额外检查
-			// 如果是空消息，我们优先认为是 ExchangeDNSRequest（因为这是 ExchangeDNS 调用）
+			var unmarshalErr error
+			if msgLen == 1 && len(msgData) > 0 && msgData[0] == 0x01 {
+				// 客户端添加的类型标记，表示这是空的 ExchangeDNSRequest
+				// 跳过标记字节，使用空字节解析
+				exchangeDNSReq = rpc.ExchangeDNSRequest{Records: make(map[string]*rpc.DNSRecord)}
+				unmarshalErr = nil // 标记为成功解析
+				log.Printf("[quic-rpc] 通过类型标记识别为 ExchangeDNSRequest (空消息，标记=0x01)")
+			} else {
+				// 正常解析（有数据或没有类型标记）
+				unmarshalErr = proto.Unmarshal(msgData, &exchangeDNSReq)
+			}
 			if unmarshalErr == nil {
 				// ExchangeDNSRequest：总是接受（即使 records 为空也是有效的 ExchangeDNS 请求）
 				// 即使 msgLen == 0，proto.Unmarshal 也能成功解析空的 ExchangeDNSRequest
