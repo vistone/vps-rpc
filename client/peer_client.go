@@ -294,6 +294,7 @@ func (p *PeerSyncManager) Start() {
         if s := config.AppConfig.Center.HeartbeatInterval; s != "" {
             if d, err := time.ParseDuration(s); err == nil && d > 0 { hb = d }
         }
+        log.Printf("[center] 已启用中心模式 address=%s heartbeat_interval=%s", addr, hb.String())
         p.wg.Add(1)
         go func(){
             defer p.wg.Done()
@@ -399,6 +400,8 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
     nr := p.nextRetryAt[peerAddr]
     p.mu.RUnlock()
     if !nr.IsZero() && time.Now().Before(nr) {
+        left := time.Until(nr).Truncate(time.Second)
+        log.Printf("[peer-sync] 跳过 %s：退避中，剩余 %v", peerAddr, left)
         return
     }
     // 避免同一peer的同步重入（周期短导致叠加）
@@ -419,7 +422,7 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
 	client, exists := p.peerClients[peerAddr]
 	p.mu.RUnlock()
 
-	if !exists {
+    if !exists {
 		// 创建新客户端
 		c, err := NewPeerClient(peerAddr, true) // TODO: 使用配置的TLS设置
 		if err != nil {
@@ -431,6 +434,7 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
 		p.peerClients[peerAddr] = client
 		p.mu.Unlock()
 	}
+    log.Printf("[peer-sync] 尝试与 %s 同步", peerAddr)
 
     // 缩短超时，避免周期重入造成堆积
     ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -468,6 +472,7 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
     p.backoffSec[peerAddr] = 0
     p.nextRetryAt[peerAddr] = time.Time{}
     p.mu.Unlock()
+    log.Printf("[peer-sync] 与 %s 连接正常，已恢复心跳", peerAddr)
     // 自动打印本次从该节点获取到的peers结果
     log.Printf("[peer-sync] 来自 %s 的已知节点: %v", peerAddr, peers)
 
