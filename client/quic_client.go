@@ -60,21 +60,25 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
             // 记录首个v6和首个v4
             for _, ipa := range ips {
                 if ipa.IP == nil { continue }
-                if ipa.IP.To4() == nil && ip6Address == "" {
-                    ip6Address = net.JoinHostPort(ipa.IP.String(), port)
-                }
-                if ipa.IP.To4() != nil && ip4Address == "" {
-                    ip4Address = net.JoinHostPort(ipa.IP.String(), port)
+                // 若系统不支持IPv6，直接跳过IPv6地址，避免 net is unreachable
+                if ipa.IP.To4() == nil {
+                    if proxy.HasIPv6() && ip6Address == "" {
+                        ip6Address = net.JoinHostPort(ipa.IP.String(), port)
+                    }
+                    // 如果不支持IPv6，直接忽略IPv6地址
+                } else {
+                    if ip4Address == "" {
+                        ip4Address = net.JoinHostPort(ipa.IP.String(), port)
+                    }
                 }
             }
-            // 若系统不支持IPv6，禁用v6尝试，避免 net is unreachable
-            if !proxy.HasIPv6() { ip6Address = "" }
-            // 默认优先v6，否则v4
-            if ip6Address != "" {
+            // 优先选择可用的地址：如果设备支持IPv6且有IPv6地址，优先IPv6；否则使用IPv4
+            if proxy.HasIPv6() && ip6Address != "" {
                 ipAddress = ip6Address
             } else if ip4Address != "" {
                 ipAddress = ip4Address
             } else {
+                // 都没有找到可用地址，回退使用域名（让QUIC内部处理DNS）
                 ipAddress = address
             }
 		}
@@ -87,7 +91,7 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
 		MaxIncomingStreams:   100,
 	}
 
-    // Happy Eyeballs：IPv6先行300ms并行，谁先连上用谁
+    // Happy Eyeballs：根据设备能力选择IPv4/IPv6，不支持IPv6时只尝试IPv4
     ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
     type dialResult struct{ conn *quic.Conn; err error }
@@ -103,13 +107,21 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
         }(addr)
     }
 
-    // 启动v6拨号（如有）
-    tryDial(ip6Address)
-    // 300ms 后启动v4以避免卡死在坏的族（如有）
-    if ip4Address != "" && ip6Address != "" {
-        timer := time.NewTimer(300 * time.Millisecond)
-        go func() { <-timer.C; tryDial(ip4Address) }()
+    // 如果设备不支持IPv6，清空IPv6地址，避免尝试连接
+    if !proxy.HasIPv6() {
+        ip6Address = ""
+    }
+
+    // 启动v6拨号（如有且设备支持）
+    if ip6Address != "" {
+        tryDial(ip6Address)
+        // 300ms 后启动v4以避免卡死在坏的族（双栈时）
+        if ip4Address != "" {
+            timer := time.NewTimer(300 * time.Millisecond)
+            go func() { <-timer.C; tryDial(ip4Address) }()
+        }
     } else {
+        // 不支持IPv6或没有IPv6地址，直接尝试IPv4
         tryDial(ip4Address)
     }
     // 若两者都为空（如传入的是IP或解析失败），至少拨一次原始地址（可为host或IP）
