@@ -207,6 +207,8 @@ type PeerSyncManager struct {
     selfIPs      map[string]bool   // 本机所有接口IP（字符串）
     selfAddrs    map[string]bool   // 本机可视为自身的 host:port 列表
     serverPort   int               // 本机服务端口
+    nextRetryAt  map[string]time.Time // 下次允许尝试时间（退避）
+    backoffSec   map[string]int       // 当前退避秒数（指数增长，上限300）
 	mu           sync.RWMutex
 	wg           sync.WaitGroup
 	closed       chan struct{}
@@ -223,6 +225,8 @@ func NewPeerSyncManager() *PeerSyncManager {
         selfIPs:     make(map[string]bool),
         selfAddrs:   make(map[string]bool),
         serverPort:  config.AppConfig.Server.Port,
+        nextRetryAt: make(map[string]time.Time),
+        backoffSec:  make(map[string]int),
         closed:      make(chan struct{}),
     }
     // 采集本机接口IP
@@ -390,6 +394,13 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
     if p.isSelfPeer(peerAddr) {
         return
     }
+    // 退避：未到允许时间则跳过
+    p.mu.RLock()
+    nr := p.nextRetryAt[peerAddr]
+    p.mu.RUnlock()
+    if !nr.IsZero() && time.Now().Before(nr) {
+        return
+    }
     // 避免同一peer的同步重入（周期短导致叠加）
     p.mu.Lock()
     if p.syncing[peerAddr] {
@@ -429,14 +440,21 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
     peers, err := client.GetPeers(ctx)
     if err != nil {
         if isTimeoutErr(err) {
-            log.Printf("[debug][peer-sync] 获取peers超时 %s: %v", peerAddr, err)
-            // 统计失败次数并判定下线
+            // 统计失败次数并判定下线 + 退避
             p.mu.Lock()
             p.failCount[peerAddr]++
             fc := p.failCount[peerAddr]
+            // 指数退避（秒），上限300s，带10%抖动
+            b := p.backoffSec[peerAddr]
+            if b <= 0 { b = 1 } else { b = b * 2 }
+            if b > 300 { b = 300 }
+            p.backoffSec[peerAddr] = b
+            jitter := time.Duration(b) * time.Second / 10
+            next := time.Now().Add(time.Duration(b)*time.Second + time.Duration(int64(jitter)-(time.Now().UnixNano()%int64(2*jitter))))
+            p.nextRetryAt[peerAddr] = next
             p.mu.Unlock()
-            if fc >= 3 { // 连续3次失败判定离线
-                log.Printf("[peer-sync] 节点疑似离线: %s (连续超时=%d)", peerAddr, fc)
+            if fc%10 == 0 { // 每10次打印一次摘要
+                log.Printf("[peer-sync] 节点疑似离线: %s (连续超时=%d, 退避=%ds)", peerAddr, fc, b)
             }
         } else {
             log.Printf("[peer-sync] 获取peers失败 %s: %v", peerAddr, err)
@@ -447,6 +465,8 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
     p.mu.Lock()
     p.failCount[peerAddr] = 0
     p.lastSeen[peerAddr] = time.Now()
+    p.backoffSec[peerAddr] = 0
+    p.nextRetryAt[peerAddr] = time.Time{}
     p.mu.Unlock()
     // 自动打印本次从该节点获取到的peers结果
     log.Printf("[peer-sync] 来自 %s 的已知节点: %v", peerAddr, peers)
