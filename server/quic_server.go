@@ -111,9 +111,11 @@ func (s *QuicRpcServer) handleConnection(conn *quic.Conn) {
         if err != nil {
             // 超时错误，继续循环等待下一个流（不关闭连接）
             if err == context.DeadlineExceeded {
+                // 记录超时日志，帮助诊断客户端超时问题
+                log.Printf("接受QUIC流超时（5秒内无新流）: %s", conn.RemoteAddr().String())
                 continue
             }
-            log.Printf("接受QUIC流失败: %v", err)
+            log.Printf("接受QUIC流失败: %v (连接: %s)", err, conn.RemoteAddr().String())
             return
         }
 
