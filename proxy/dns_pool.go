@@ -157,18 +157,42 @@ func (p *DNSPool) persist() error {
 
 func (p *DNSPool) persistNow() {
     p.mu.RLock()
+    recordCount := len(p.records)
+    if recordCount == 0 {
+        p.mu.RUnlock()
+        // 空记录不写入，避免覆盖已有数据
+        return
+    }
     data, err := json.MarshalIndent(p.records, "", "  ")
     p.mu.RUnlock()
-    if err != nil { log.Printf("[dns-pool] marshal failed: %v", err); return }
-    if err := os.MkdirAll(filepath.Dir(p.filename), 0o755); err != nil { log.Printf("[dns-pool] mkdir failed: %v", err); return }
+    if err != nil { 
+        log.Printf("[dns-pool] marshal failed: %v", err)
+        return
+    }
+    
+    dir := filepath.Dir(p.filename)
+    if err := os.MkdirAll(dir, 0o755); err != nil { 
+        log.Printf("[dns-pool] mkdir failed: %v (dir=%s)", err, dir)
+        return
+    }
+    
     tmp := p.filename + ".tmp"
-    if err := os.WriteFile(tmp, data, 0o644); err != nil { log.Printf("[dns-pool] write tmp failed: %v", err); return }
-    if err := os.Rename(tmp, p.filename); err != nil { log.Printf("[dns-pool] rename failed: %v", err); return }
+    if err := os.WriteFile(tmp, data, 0o644); err != nil { 
+        log.Printf("[dns-pool] write tmp failed: %v (file=%s, size=%d bytes)", err, tmp, len(data))
+        return
+    }
+    if err := os.Rename(tmp, p.filename); err != nil { 
+        log.Printf("[dns-pool] rename failed: %v (tmp=%s -> file=%s)", err, tmp, p.filename)
+        return
+    }
+    
     p.persistMu.Lock()
     p.lastPersist = time.Now()
-    if fi, err := os.Stat(p.filename); err == nil { p.fileModTime = fi.ModTime() }
+    if fi, err := os.Stat(p.filename); err == nil { 
+        p.fileModTime = fi.ModTime()
+    }
     p.persistMu.Unlock()
-    log.Printf("[dns-pool] persisted %d domains to %s", len(p.records), p.filename)
+    log.Printf("[dns-pool] persisted %d domains to %s (%d bytes)", recordCount, p.filename, len(data))
 }
 
 // 背景热加载：定期检查文件是否被外部修改（如手工或工具写入），若变更则加载

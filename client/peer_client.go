@@ -427,9 +427,47 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
 	p.mu.RUnlock()
 
     if !exists {
+		// 检查是否是纯IPv6地址且设备不支持IPv6路由
+		host, _, errSplit := net.SplitHostPort(peerAddr)
+		if errSplit == nil {
+			// 移除IPv6地址的方括号
+			host = strings.Trim(host, "[]")
+			if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+				// 这是纯IPv6地址，检查设备是否支持IPv6
+				if !proxy.HasIPv6() {
+					// 设备不支持IPv6，跳过此peer
+					log.Printf("[peer-sync] 跳过纯IPv6地址 %s（设备不支持IPv6路由）", peerAddr)
+					// 标记为失败，使用较长的退避时间
+					p.mu.Lock()
+					p.failCount[peerAddr] = 100 // 标记为高失败次数
+					p.nextRetryAt[peerAddr] = time.Now().Add(1 * time.Hour) // 1小时后重试
+					p.mu.Unlock()
+					return
+				}
+			}
+		}
+		
 		// 创建新客户端
 		c, err := NewPeerClient(peerAddr, true) // TODO: 使用配置的TLS设置
 		if err != nil {
+			// 检查是否是IPv6路由错误，如果是且是纯IPv6地址，标记为不可用
+			errStr := err.Error()
+			if strings.Contains(errStr, "network is unreachable") || 
+			   strings.Contains(errStr, "no route to host") {
+				host, _, errSplit := net.SplitHostPort(peerAddr)
+				if errSplit == nil {
+					host = strings.Trim(host, "[]")
+					if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+						// 纯IPv6地址且路由不可达，标记为不可用
+						log.Printf("[peer-sync] 纯IPv6地址 %s 路由不可达，标记为不可用", peerAddr)
+						p.mu.Lock()
+						p.failCount[peerAddr] = 100
+						p.nextRetryAt[peerAddr] = time.Now().Add(1 * time.Hour)
+						p.mu.Unlock()
+						return
+					}
+				}
+			}
 			log.Printf("[peer-sync] 连接peer失败 %s: %v", peerAddr, err)
 			return
 		}
