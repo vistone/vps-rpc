@@ -152,47 +152,37 @@ func PrewarmConnections(ctx context.Context) {
 					key := d + "|" + a
 					h2c := tempClient.buildHTTP2Client(d, a, chid)
 
+					// 关键修复：使用HTTP/1.1来预热连接，避免HTTP/2的协议错误
+					// HTTP/1.1对HEAD请求返回数据的容忍度更高，不会报协议错误
+					// 预热的目标是建立连接，HTTP/1.1和HTTP/2的连接都可以被后续请求复用
+					// 注意：虽然用HTTP/1.1预热，但缓存的是HTTP/2客户端供后续使用
+					h1c := tempClient.buildHTTP1Client(d, a, chid)
+					
 					// 尝试发送一个HEAD请求来建立连接（轻量级）
 					// 使用很短的超时，仅用于建立连接，不等待完整响应
 					prewarmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 					req, _ := http.NewRequestWithContext(prewarmCtx, "HEAD", "https://"+host+":"+port, nil)
 					req.Host = d // 设置Host头为域名
-					resp, err := h2c.Do(req)
+					resp, err := h1c.Do(req) // 使用HTTP/1.1避免协议错误
 					cancel()
 
-					// 忽略HEAD请求可能返回数据的协议错误（某些服务器不规范实现）
-					// HTTP/2规范要求HEAD请求不应有数据，但某些服务器会返回数据
-					// 关键修复：在关闭响应体之前，先读取并丢弃所有数据
-					// 这样可以避免HTTP/2库内部报告"protocol error: received DATA on a HEAD request"
+					// 关闭响应体
 					if resp != nil {
-						// 读取并丢弃响应体数据（避免HTTP/2库报协议错误）
-						_, _ = io.Copy(io.Discard, resp.Body)
-						_ = resp.Body.Close() // 关闭响应体
+						_ = resp.Body.Close()
 					}
 
-					// 判断是否为协议错误（HEAD请求返回数据）
-					isProtoErr := isProtocolError(err)
-					
-					// 检查是否成功：只要连接建立（有响应）即可，忽略协议错误
+					// 检查是否成功：只要连接建立（有响应）即可
 					if resp != nil {
-						// 连接建立成功，缓存到全局预建池
+						// 连接建立成功，缓存HTTP/2客户端到全局预建池（供后续HTTP/2请求复用）
 						globalPrewarmMu.Lock()
 						globalPrewarmedH2Clients[key] = h2c
 						globalPrewarmMu.Unlock()
 						countMu.Lock()
 						successCount++
 						countMu.Unlock()
-						// 如果是协议错误，不记录成功日志（减少日志噪音）
-						if !isProtoErr {
-							log.Printf("[prewarm] ✓ %s -> %s", d, a)
-						}
-					} else if err != nil && !isProtoErr {
-						// 真正的连接失败，记录失败
-						countMu.Lock()
-						failCount++
-						countMu.Unlock()
-					} else {
-						// 协议错误但没有响应，可能是其他问题
+						log.Printf("[prewarm] ✓ %s -> %s", d, a)
+					} else if err != nil {
+						// 连接失败
 						countMu.Lock()
 						failCount++
 						countMu.Unlock()
@@ -249,7 +239,12 @@ func PrewarmSingleConnection(ctx context.Context, domain, address string) {
 	}
 
 	chid := tempClient.getClientHelloID()
-	h2c := tempClient.buildHTTP2Client(domain, address, chid)
+	
+	// 关键修复：使用HTTP/1.1来预热连接，避免HTTP/2的协议错误
+	// HTTP/1.1对HEAD请求返回数据的容忍度更高，不会报协议错误
+	// 预热的目标是建立连接，HTTP/1.1和HTTP/2的连接都可以被后续请求复用
+	h1c := tempClient.buildHTTP1Client(domain, address, chid)
+	h2c := tempClient.buildHTTP2Client(domain, address, chid) // 仍然创建h2客户端供后续使用
 
 	// 解析IP地址
 	host, port, err := net.SplitHostPort(address)
@@ -257,36 +252,25 @@ func PrewarmSingleConnection(ctx context.Context, domain, address string) {
 		return
 	}
 
-	// 发送HEAD请求建立连接
+	// 使用HTTP/1.1发送HEAD请求建立连接（避免HTTP/2协议错误）
 	prewarmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	req, _ := http.NewRequestWithContext(prewarmCtx, "HEAD", "https://"+host+":"+port, nil)
 	req.Host = domain
-	resp, err := h2c.Do(req)
+	resp, err := h1c.Do(req)
 	cancel()
 
-	// 忽略HEAD请求可能返回数据的协议错误（某些服务器不规范实现）
-	// HTTP/2规范要求HEAD请求不应有数据，但某些服务器会返回数据
-	// 关键修复：在关闭响应体之前，先读取并丢弃所有数据
-	// 这样可以避免HTTP/2库内部报告"protocol error: received DATA on a HEAD request"
+	// 关闭响应体
 	if resp != nil {
-		// 读取并丢弃响应体数据（避免HTTP/2库报协议错误）
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close() // 关闭响应体
+		_ = resp.Body.Close()
 	}
 
-	// 判断是否为协议错误（HEAD请求返回数据）
-	isProtoErr := isProtocolError(err)
-	
-	// 检查是否成功：只要连接建立（有响应）即可，忽略协议错误
+	// 检查是否成功：只要连接建立（有响应）即可
 	if resp != nil {
-		// 连接建立成功，加入全局预建池
+		// 连接建立成功，加入全局预建池（使用HTTP/2客户端，供后续HTTP/2请求复用）
 		globalPrewarmMu.Lock()
 		globalPrewarmedH2Clients[key] = h2c
 		globalPrewarmMu.Unlock()
-		// 如果是协议错误，不记录成功日志（减少日志噪音）
-		if !isProtoErr {
-			log.Printf("[prewarm] ✓ 新IP预热成功: %s -> %s", domain, address)
-		}
+		log.Printf("[prewarm] ✓ 新IP预热成功: %s -> %s", domain, address)
 	}
 }
 
