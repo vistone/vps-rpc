@@ -194,9 +194,10 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 		log.Printf("[quic-rpc] URL=%s, 服务处理=%v, 总计=%v", fetchReq.Url, quicRpcLatency, quicRpcLatency)
     } else if s.peerServer != nil {
 		// 尝试解析为PeerService相关请求
-		// ExchangeDNSRequest: 有records字段
+		// ExchangeDNSRequest: 有records字段（即使是空的map也是有效的ExchangeDNSRequest）
         var exchangeDNSReq rpc.ExchangeDNSRequest
         if err := proto.Unmarshal(msgData, &exchangeDNSReq); err == nil {
+            // ExchangeDNSRequest 识别：即使 Records 为空，只要有这个结构就是 ExchangeDNSRequest
             // 学到对端地址
             if conn != nil {
                 if ps, ok := s.peerServer.(*PeerServiceServer); ok {
@@ -268,8 +269,17 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 					}
 					log.Printf("[quic-rpc] ReportNode: %s", reportNodeReq.Address)
 				} else {
-					log.Printf("无法识别的请求类型")
-					return
+					log.Printf("无法识别的请求类型（msgLen=%d，已尝试所有PeerService类型）", msgLen)
+					// 对于无法识别的请求，返回一个空的 ExchangeDNSResponse，而不是不发送响应
+					// 这样可以避免客户端反序列化失败
+					emptyResp := &rpc.ExchangeDNSResponse{Records: make(map[string]*rpc.DNSRecord)}
+					var err error
+					respData, err = proto.Marshal(emptyResp)
+					if err != nil {
+						log.Printf("序列化空响应失败: %v", err)
+						return
+					}
+					log.Printf("[quic-rpc] 无法识别的请求，返回空ExchangeDNSResponse")
 				}
 			}
 		}
