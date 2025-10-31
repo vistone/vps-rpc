@@ -15,7 +15,7 @@ max_incoming_uni_streams = 100
 # 爬虫配置
 default_timeout = "30s"
 max_concurrent_requests = 10
-dedupe_window = "60s"
+dedupe_window = "0s"
 
 [crawler.default_headers]
 Accept = "*/*"
@@ -54,7 +54,7 @@ multiplier = 2.0
 [admin]
 # 管理服务配置
 # 服务器版本号
-version = "1.0.284"
+version = "1.0.285"
 # 日志缓冲区大小（最多保存的日志条目数量）
 log_buffer_size = 1000
 # 默认最大日志行数
