@@ -203,6 +203,7 @@ type PeerSyncManager struct {
 	peerClients  map[string]*PeerClient
     lastSeen     map[string]time.Time
     failCount    map[string]int
+    syncing      map[string]bool
 	mu           sync.RWMutex
 	wg           sync.WaitGroup
 	closed       chan struct{}
@@ -215,6 +216,7 @@ func NewPeerSyncManager() *PeerSyncManager {
 		peerClients: make(map[string]*PeerClient),
         lastSeen:    make(map[string]time.Time),
         failCount:   make(map[string]int),
+        syncing:     make(map[string]bool),
 		closed:      make(chan struct{}),
 	}
 }
@@ -312,6 +314,19 @@ func (p *PeerSyncManager) syncWithSeeds() {
 
 // syncWithPeer 与指定peer同步
 func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
+    // 避免同一peer的同步重入（周期短导致叠加）
+    p.mu.Lock()
+    if p.syncing[peerAddr] {
+        p.mu.Unlock()
+        return
+    }
+    p.syncing[peerAddr] = true
+    p.mu.Unlock()
+    defer func(){
+        p.mu.Lock()
+        delete(p.syncing, peerAddr)
+        p.mu.Unlock()
+    }()
 	// 获取或创建peer客户端
 	p.mu.RLock()
 	client, exists := p.peerClients[peerAddr]
@@ -330,7 +345,8 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
 		p.mu.Unlock()
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    // 缩短超时，避免周期重入造成堆积
+    ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
     // 获取已知peers列表
@@ -362,7 +378,7 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
     // 自广播：上报本节点地址；当未配置时发送空字符串，由服务端基于连接远端地址自动推断
     {
         my := config.AppConfig.Peer.MyAddr // 可为空
-        ctxR, cancelR := context.WithTimeout(context.Background(), 5*time.Second)
+        ctxR, cancelR := context.WithTimeout(context.Background(), 2*time.Second)
         _ = client.ReportNode(ctxR, my)
         cancelR()
     }
@@ -413,7 +429,7 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
         }
         if len(local) > 0 { // 仅当有白名单数据时才交换，避免发送空消息
             // 发送ExchangeDNS
-            ctx3, cancel3 := context.WithTimeout(context.Background(), 10*time.Second)
+            ctx3, cancel3 := context.WithTimeout(context.Background(), 3*time.Second)
             defer cancel3()
             resp, err := client.ExchangeDNS(ctx3, &rpc.ExchangeDNSRequest{Records: local})
             if err != nil {
