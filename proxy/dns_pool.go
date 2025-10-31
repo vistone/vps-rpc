@@ -43,6 +43,7 @@ type DNSPool struct {
 
 func NewDNSPool(path string) (*DNSPool, error) {
     // Treat provided path as JSON file path. If directory, use dns_pool.json inside it.
+    if abs, e := filepath.Abs(path); e == nil { path = abs }
     fi, err := os.Stat(path)
     if err == nil && fi.IsDir() {
         path = filepath.Join(path, "dns_pool.json")
@@ -59,6 +60,7 @@ func NewDNSPool(path string) (*DNSPool, error) {
         _ = os.MkdirAll(filepath.Dir(path), 0o755)
         // create empty file lazily on first persist
     }
+    log.Printf("[dns-pool] using file: %s", path)
     return pool, nil
 }
 
@@ -98,7 +100,11 @@ func (p *DNSPool) persist() error {
     if err := os.WriteFile(tmp, data, 0o644); err != nil {
         return err
     }
-    return os.Rename(tmp, p.filename)
+    if err := os.Rename(tmp, p.filename); err != nil {
+        return err
+    }
+    log.Printf("[dns-pool] persisted %d domains to %s", len(p.records), p.filename)
+    return nil
 }
 
 // resolveAndStore 解析域名A/AAAA并存储
