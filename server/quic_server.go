@@ -121,7 +121,8 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 
 	// 读取请求长度
 	var length [4]byte
-	if _, err := stream.Read(length[:]); err != nil {
+    _ = stream.SetReadDeadline(time.Now().Add(3 * time.Second))
+    if _, err := stream.Read(length[:]); err != nil {
 		log.Printf("读取消息长度失败: %v", err)
 		return
 	}
@@ -138,6 +139,7 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 		log.Printf("读取消息数据失败: %v", err)
 		return
 	}
+    _ = stream.SetReadDeadline(time.Time{})
 
     // 解析并路由到对应服务
 	ctx := context.Background()
@@ -268,14 +270,16 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 	// 发送响应：长度 + 数据
 	respLen := uint32(len(respData))
 	binary.BigEndian.PutUint32(length[:], respLen)
-	if _, err := stream.Write(length[:]); err != nil {
+    _ = stream.SetWriteDeadline(time.Now().Add(3 * time.Second))
+    if _, err := stream.Write(length[:]); err != nil {
 		log.Printf("发送响应长度失败: %v", err)
 		return
 	}
-	if _, err := stream.Write(respData); err != nil {
+    if _, err := stream.Write(respData); err != nil {
 		log.Printf("发送响应数据失败: %v", err)
 		return
 	}
+    _ = stream.SetWriteDeadline(time.Time{})
 }
 
 // quicConnWrapper 将QUIC连接和流包装为gRPC可以使用的连接
