@@ -223,6 +223,13 @@ func NewPeerSyncManager() *PeerSyncManager {
 func (p *PeerSyncManager) Start() {
 	log.Printf("[peer-sync] 启动peer同步管理器")
 
+    // 从本地持久化恢复已知peers（即使seed下线也能继续发现）
+    for _, addr := range LoadKnownPeers() {
+        if addr != "" {
+            p.knownPeers[addr] = true
+        }
+    }
+
 	// 启动定期同步任务
 	p.wg.Add(1)
 	go p.periodicSync()
@@ -357,6 +364,7 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
 	for _, peer := range peers {
 		if peer != peerAddr && !p.knownPeers[peer] {
 			p.knownPeers[peer] = true
+            SavePeer(peer)
 			log.Printf("[peer-sync] 发现新节点: %s", peer)
 		}
 	}
