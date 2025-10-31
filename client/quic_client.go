@@ -100,14 +100,18 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
         }(addr)
     }
 
-    // 启动v6拨号
+    // 启动v6拨号（如有）
     tryDial(ip6Address)
-    // 300ms 后启动v4以避免卡死在坏的族
+    // 300ms 后启动v4以避免卡死在坏的族（如有）
     if ip4Address != "" && ip6Address != "" {
         timer := time.NewTimer(300 * time.Millisecond)
         go func() { <-timer.C; tryDial(ip4Address) }()
     } else {
         tryDial(ip4Address)
+    }
+    // 若两者都为空（如传入的是IP或解析失败），至少拨一次原始地址（可为host或IP）
+    if started == 0 {
+        tryDial(ipAddress)
     }
 
     var conn *quic.Conn
@@ -122,7 +126,13 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
         dialErr = r.err
     }
     if conn == nil {
-        return nil, fmt.Errorf("QUIC连接失败: %w", dialErr)
+        // 兜底：再尝试一次原始地址（避免因解析只得到不可达族而失败）
+        if c2, e2 := quic.DialAddrEarly(ctx, ipAddress, tlsConfig, quicConfig); e2 == nil {
+            conn = c2
+        } else {
+            if dialErr == nil { dialErr = e2 }
+            return nil, fmt.Errorf("QUIC连接失败: %w", dialErr)
+        }
     }
 
 	return &QuicClient{
