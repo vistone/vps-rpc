@@ -12,7 +12,8 @@ import (
 	"github.com/quic-go/quic-go"
 	"google.golang.org/protobuf/proto"
 
-	"vps-rpc/rpc"
+    "vps-rpc/rpc"
+    "vps-rpc/proxy"
 )
 
 // QuicClient QUIC客户端，实现基于QUIC流的自定义RPC协议
@@ -55,7 +56,7 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
 			// DNS解析失败或超时，回退使用域名（quic.DialAddrEarly会内部处理DNS）
 			// 但这样会慢一些，建议用户直接使用IP地址
 			ipAddress = address
-		} else {
+        } else {
             // 记录首个v6和首个v4
             for _, ipa := range ips {
                 if ipa.IP == nil { continue }
@@ -66,6 +67,8 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
                     ip4Address = net.JoinHostPort(ipa.IP.String(), port)
                 }
             }
+            // 若系统不支持IPv6，禁用v6尝试，避免 net is unreachable
+            if !proxy.HasIPv6() { ip6Address = "" }
             // 默认优先v6，否则v4
             if ip6Address != "" {
                 ipAddress = ip6Address
