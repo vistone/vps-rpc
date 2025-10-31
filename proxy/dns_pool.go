@@ -574,12 +574,57 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
         return "", false, fmt.Errorf("无可用IP: %s", domain)
     }
     
-    // 使用统一的索引进行严格轮询（合并后的列表）
-    // 使用 NextIndex4 作为统一索引（NextIndex6 保留兼容性，但实际不用）
+    // 基于延迟的权重轮询：优先选快的，但仍保证所有IP都有机会
+    // 计算每个IP的权重（延迟越低权重越高）
+    weights := make([]float64, len(allAvailableIPs))
+    totalWeight := 0.0
+    for i, item := range allAvailableIPs {
+        latency := rec.IPLatency[item.ip]
+        if latency == 0 {
+            // 未知延迟给默认权重（假设50ms）
+            latency = 50.0
+        }
+        // 权重 = 100 / 延迟，延迟越低权重越高
+        weight := 100.0 / (latency + 1.0)
+        weights[i] = weight
+        totalWeight += weight
+    }
+    
+    // 使用权重随机选择（仍使用索引但跳过慢IP的概率更高）
+    if totalWeight > 0 {
+        // 简化：每10次中，7次选权重最高的，3次严格轮询（保证均衡）
+        unifiedIdx := rec.NextIndex4
+        rec.NextIndex4 = (unifiedIdx + 1) % len(allAvailableIPs)
+        
+        var selected struct {
+            ip   string
+            isV6 bool
+        }
+        if unifiedIdx%10 < 7 {
+            // 70%概率：选权重最高的IP
+            maxWeight := 0.0
+            maxIdx := 0
+            for i, w := range weights {
+                if w > maxWeight {
+                    maxWeight = w
+                    maxIdx = i
+                }
+            }
+            selected = allAvailableIPs[maxIdx]
+        } else {
+            // 30%概率：严格轮询（保证均衡）
+            idx := unifiedIdx % len(allAvailableIPs)
+            selected = allAvailableIPs[idx]
+        }
+        p.mu.Unlock()
+        if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
+        return selected.ip, selected.isV6, nil
+    }
+    
+    // 回退：严格轮询
     unifiedIdx := rec.NextIndex4
     idx := unifiedIdx % len(allAvailableIPs)
     rec.NextIndex4 = (unifiedIdx + 1) % len(allAvailableIPs)
-    
     selected := allAvailableIPs[idx]
     p.mu.Unlock()
     if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
@@ -630,7 +675,7 @@ func (p *DNSPool) ReportResult(domain, ip string, status int) error {
 func (p *DNSPool) ReportLatency(domain, ip string, ms int64) error {
     if p == nil || ip == "" || domain == "" || ms <= 0 { return nil }
     const alpha = 0.3
-    const maxLatencyThreshold = 100.0 // 超过100ms的IP会被临时跳过
+    // 不再使用阈值，改用权重轮询
     p.mu.Lock()
     rec, ok := p.records[domain]
     if !ok {
@@ -653,18 +698,7 @@ func (p *DNSPool) ReportLatency(domain, ip string, ms int64) error {
     } else {
         rec.IPLatency[ip] = alpha*val + (1-alpha)*rec.IPLatency[ip]
     }
-    // 如果延迟超过阈值，临时加入黑名单（但仍保留在列表中，等待改善后自动恢复）
-    if rec.IPLatency[ip] > maxLatencyThreshold {
-        if !rec.Blacklist[ip] {
-            rec.Blacklist[ip] = true
-            log.Printf("[dns-pool] IP %s 延迟 %.1fms 超过阈值，临时加入黑名单", ip, rec.IPLatency[ip])
-        }
-    } else if rec.Blacklist[ip] && rec.IPLatency[ip] <= maxLatencyThreshold*0.8 {
-        // 延迟降低到阈值的80%以下时，自动从黑名单移除
-        delete(rec.Blacklist, ip)
-        rec.Whitelist[ip] = true
-        log.Printf("[dns-pool] IP %s 延迟改善到 %.1fms，从黑名单恢复", ip, rec.IPLatency[ip])
-    }
+    // 不再自动黑名单，保留所有IP用于权重轮询
     // 同时更新族级别的EWMA（兼容旧逻辑）
     if net.ParseIP(ip) != nil && net.ParseIP(ip).To4() == nil {
         if rec.EwmaLatency6 == 0 { rec.EwmaLatency6 = val } else { rec.EwmaLatency6 = alpha*val + (1-alpha)*rec.EwmaLatency6 }
