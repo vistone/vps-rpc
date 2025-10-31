@@ -297,12 +297,14 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 获取已知peers列表
+    // 获取已知peers列表
 	peers, err := client.GetPeers(ctx)
 	if err != nil {
 		log.Printf("[peer-sync] 获取peers失败 %s: %v", peerAddr, err)
 		return
 	}
+    // 自动打印本次从该节点获取到的peers结果
+    log.Printf("[peer-sync] 来自 %s 的已知节点: %v", peerAddr, peers)
 
 	// 添加新的peers到已知列表
 	p.mu.Lock()
@@ -314,7 +316,12 @@ func (p *PeerSyncManager) syncWithPeer(peerAddr string) {
 	}
 	p.mu.Unlock()
 
-	// TODO: 实际DNS记录交换逻辑
-	log.Printf("[peer-sync] 与 %s 同步完成，发现 %d 个peers", peerAddr, len(peers))
+    // 自动打印当前聚合后的已知节点数量，便于观察是否互相发现
+    p.mu.RLock()
+    total := len(p.knownPeers)
+    p.mu.RUnlock()
+
+    // TODO: 实际DNS记录交换逻辑
+    log.Printf("[peer-sync] 与 %s 同步完成，本次返回=%d，当前已知节点总数=%d", peerAddr, len(peers), total)
 }
 
