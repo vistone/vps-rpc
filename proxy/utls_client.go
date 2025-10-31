@@ -246,26 +246,36 @@ func (c *UTLSClient) buildHTTP1Client(host, address string, helloID *utls.Client
 }
 
 // 获取/创建可复用的 h2 客户端
+// 注意：HTTP2 Transport的连接复用是基于目标地址（IP:port）的
+// 为了最大化连接复用，我们按 host+IP 的组合作为key，同一IP的连接会被复用
 func (c *UTLSClient) getOrCreateH2Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if cli, ok := c.h2Clients[host]; ok && cli != nil {
+	// 使用 host+address 作为key，确保同一IP的连接被复用
+	// 同时允许不同IP有各自的连接池
+	key := host + "|" + address
+	if cli, ok := c.h2Clients[key]; ok && cli != nil {
 		return cli
 	}
 	cli := c.buildHTTP2Client(host, address, helloID)
-	c.h2Clients[host] = cli
+	c.h2Clients[key] = cli
 	return cli
 }
 
 // 获取/创建可复用的 h1 客户端
+// 注意：HTTP/1.1 Transport的连接复用也是基于目标地址的
+// 为了最大化连接复用，我们按 host+IP 的组合作为key，同一IP的连接会被复用
 func (c *UTLSClient) getOrCreateH1Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if cli, ok := c.h1Clients[host]; ok && cli != nil {
+	// 使用 host+address 作为key，确保同一IP的连接被复用
+	// 同时允许不同IP有各自的连接池
+	key := host + "|" + address
+	if cli, ok := c.h1Clients[key]; ok && cli != nil {
 		return cli
 	}
 	cli := c.buildHTTP1Client(host, address, helloID)
-	c.h1Clients[host] = cli
+	c.h1Clients[key] = cli
 	return cli
 }
 
