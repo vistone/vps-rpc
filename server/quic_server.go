@@ -199,6 +199,18 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
     } else if s.peerServer != nil {
 		// 尝试解析为PeerService相关请求
 		// 注意：protobuf 空消息可能被多种类型解析成功，需要更严格的识别逻辑
+		// 安全地获取前几个字节用于日志
+		prefixBytes := 4
+		if len(msgData) < prefixBytes {
+			prefixBytes = len(msgData)
+		}
+		var prefixHex string
+		if prefixBytes > 0 {
+			prefixHex = fmt.Sprintf("%x", msgData[:prefixBytes])
+		} else {
+			prefixHex = "(空)"
+		}
+		log.Printf("[quic-rpc] 开始识别PeerService请求 (msgLen=%d, 前%d字节hex=%s)", msgLen, prefixBytes, prefixHex)
 		
 		// 首先尝试解析为 ReportNodeRequest（有 address 字段，最容易识别）
 		var reportNodeReq rpc.ReportNodeRequest
@@ -244,7 +256,7 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 				// 跳过标记字节，使用空字节解析
 				exchangeDNSReq = rpc.ExchangeDNSRequest{Records: make(map[string]*rpc.DNSRecord)}
 				unmarshalErr = nil // 标记为成功解析
-				log.Printf("[quic-rpc] 通过类型标记识别为 ExchangeDNSRequest (空消息，标记=0x01)")
+				log.Printf("[quic-rpc] ✅ 通过类型标记识别为 ExchangeDNSRequest (空消息，标记=0x01)")
 			} else {
 				// 正常解析（有数据或没有类型标记）
 				unmarshalErr = proto.Unmarshal(msgData, &exchangeDNSReq)
