@@ -512,55 +512,59 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
         }
     }
 	
-    // 严格轮询：设备支持IPv6时优先（配置优先级），否则按交替或可用族
+    // 严格轮询：设备支持IPv6时优先（配置优先级），但在每个族内必须严格平均轮询所有可用IP
     preferV6 := config.AppConfig.DNS.PreferIPv6
     tryV6First := allowV6 && (!allowV4 || preferV6 || rec.NextPreferV6)
-	// 先尝试V6
-	if tryV6First && len(rec.IPv6) > 0 {
-		for i := 0; i < len(rec.IPv6); i++ {
-			idx := rec.NextIndex6 % len(rec.IPv6)
-			rec.NextIndex6 = (rec.NextIndex6 + 1) % len(rec.IPv6)
-			candidate := rec.IPv6[idx]
-			if !rec.Blacklist[candidate] {
-				if allowV4 && allowV6 {
-					rec.NextPreferV6 = false
-				}
-				p.mu.Unlock()
-				if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
-				return candidate, true, nil
-			}
-		}
+    
+    // 构建可用IP列表（排除黑名单），确保轮询时跳过不可用的
+    availableV6 := make([]string, 0, len(rec.IPv6))
+    for _, ip := range rec.IPv6 {
+        if !rec.Blacklist[ip] {
+            availableV6 = append(availableV6, ip)
+        }
+    }
+    availableV4 := make([]string, 0, len(rec.IPv4))
+    for _, ip := range rec.IPv4 {
+        if !rec.Blacklist[ip] {
+            availableV4 = append(availableV4, ip)
+        }
+    }
+    
+	// 先尝试V6（如果有可用且优先）
+	if tryV6First && len(availableV6) > 0 {
+        idx := rec.NextIndex6 % len(availableV6)
+        rec.NextIndex6 = (rec.NextIndex6 + 1) % len(availableV6)
+        candidate := availableV6[idx]
+        if allowV4 && allowV6 {
+            rec.NextPreferV6 = false
+        }
+        p.mu.Unlock()
+        if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
+        return candidate, true, nil
 	}
-	if allowV4 && len(rec.IPv4) > 0 {
-		for i := 0; i < len(rec.IPv4); i++ {
-			idx := rec.NextIndex4 % len(rec.IPv4)
-			rec.NextIndex4 = (rec.NextIndex4 + 1) % len(rec.IPv4)
-			candidate := rec.IPv4[idx]
-			if !rec.Blacklist[candidate] {
-				if allowV4 && allowV6 {
-					rec.NextPreferV6 = true
-				}
-				p.mu.Unlock()
-				if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
-				return candidate, false, nil
-			}
-		}
+	// 尝试V4
+	if allowV4 && len(availableV4) > 0 {
+        idx := rec.NextIndex4 % len(availableV4)
+        rec.NextIndex4 = (rec.NextIndex4 + 1) % len(availableV4)
+        candidate := availableV4[idx]
+        if allowV4 && allowV6 {
+            rec.NextPreferV6 = true
+        }
+        p.mu.Unlock()
+        if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
+        return candidate, false, nil
 	}
-	// 如果未尝试V6且允许，最后再试一次V6（交替情况下）
-	if !tryV6First && allowV6 && len(rec.IPv6) > 0 {
-		for i := 0; i < len(rec.IPv6); i++ {
-			idx := rec.NextIndex6 % len(rec.IPv6)
-			rec.NextIndex6 = (rec.NextIndex6 + 1) % len(rec.IPv6)
-			candidate := rec.IPv6[idx]
-			if !rec.Blacklist[candidate] {
-				if allowV4 && allowV6 {
-					rec.NextPreferV6 = false
-				}
-				p.mu.Unlock()
-				if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
-				return candidate, true, nil
-			}
-		}
+	// 如果未尝试V6且允许，最后再试一次V6（回退）
+	if !tryV6First && allowV6 && len(availableV6) > 0 {
+        idx := rec.NextIndex6 % len(availableV6)
+        rec.NextIndex6 = (rec.NextIndex6 + 1) % len(availableV6)
+        candidate := availableV6[idx]
+        if allowV4 && allowV6 {
+            rec.NextPreferV6 = false
+        }
+        p.mu.Unlock()
+        if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
+        return candidate, true, nil
 	}
 	p.mu.Unlock()
 	return "", false, fmt.Errorf("无可用IP: %s", domain)
