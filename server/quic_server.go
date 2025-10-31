@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"encoding/binary"
+    "fmt"
 	"io"
 	"log"
+    "net"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -101,20 +103,20 @@ func (s *QuicRpcServer) handleConnection(conn *quic.Conn) {
 	log.Printf("已接受来自 %s 的QUIC连接", conn.RemoteAddr().String())
 
 	for {
-		stream, err := conn.AcceptStream(context.Background())
+        stream, err := conn.AcceptStream(context.Background())
 		if err != nil {
 			log.Printf("接受QUIC流失败: %v", err)
 			return
 		}
 
-		go s.handleStream(stream)
+        go s.handleStreamWithConn(conn, stream)
 	}
 }
 
-// handleStream 处理单个QUIC流：实现自定义RPC协议
+// handleStreamWithConn 处理单个QUIC流：实现自定义RPC协议
 // 协议格式：4字节长度（大端序）+ protobuf消息
 // 支持多服务路由：通过消息字段特征识别请求类型
-func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
+func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Stream) {
 	defer stream.Close()
 
 	// 读取请求长度
@@ -179,7 +181,7 @@ func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
     } else if s.peerServer != nil {
 		// 尝试解析为PeerService相关请求
 		// ExchangeDNSRequest: 有records字段
-		var exchangeDNSReq rpc.ExchangeDNSRequest
+        var exchangeDNSReq rpc.ExchangeDNSRequest
         if err := proto.Unmarshal(msgData, &exchangeDNSReq); err == nil {
 			resp, err := s.peerServer.ExchangeDNS(ctx, &exchangeDNSReq)
 			if err != nil {
@@ -209,8 +211,19 @@ func (s *QuicRpcServer) handleStream(stream *quic.Stream) {
 				log.Printf("[quic-rpc] GetPeers: %d个节点", len(resp.Peers))
 			} else {
 				// ReportNodeRequest: 有address字段
-				var reportNodeReq rpc.ReportNodeRequest
-				if err := proto.Unmarshal(msgData, &reportNodeReq); err == nil && reportNodeReq.Address != "" {
+            var reportNodeReq rpc.ReportNodeRequest
+            if err := proto.Unmarshal(msgData, &reportNodeReq); err == nil {
+                // 若对方未提供地址，自动根据远端IP和本服务端口生成 <remoteIP>:<server.port>
+                if reportNodeReq.Address == "" && conn != nil {
+                    rhost, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+                    if rhost != "" {
+                        reportNodeReq.Address = net.JoinHostPort(rhost, fmt.Sprintf("%d", config.AppConfig.Server.Port))
+                    }
+                }
+                if reportNodeReq.Address == "" {
+                    log.Printf("ReportNode缺少address，忽略")
+                    return
+                }
 					resp, err := s.peerServer.ReportNode(ctx, &reportNodeReq)
 					if err != nil {
 						log.Printf("ReportNode失败: %v", err)
