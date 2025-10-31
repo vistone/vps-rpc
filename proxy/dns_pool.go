@@ -137,6 +137,44 @@ func (p *DNSPool) resolveAndStore(ctx context.Context, domain string) (*dnsRecor
 	return &rec, nil
 }
 
+// resolveAndStoreQuick 快速解析模式：用于请求路径，尽量降低首包等待
+// 采用较少次数与更短间隔，避免长时间阻塞请求
+func (p *DNSPool) resolveAndStoreQuick(ctx context.Context, domain string) (*dnsRecord, error) {
+    var rec dnsRecord
+    rec.Domain = domain
+
+    uniq4 := map[string]struct{}{}
+    uniq6 := map[string]struct{}{}
+
+    attempts := 3
+    baseDelay := 30 * time.Millisecond
+
+    for i := 0; i < attempts; i++ {
+        r := &net.Resolver{}
+        // 同步查询，减少调度开销
+        if addrs4, err := r.LookupIP(ctx, "ip4", domain); err == nil {
+            for _, ip := range addrs4 { uniq4[ip.String()] = struct{}{} }
+        }
+        if addrs6, err := r.LookupIP(ctx, "ip6", domain); err == nil {
+            for _, ip := range addrs6 { uniq6[ip.String()] = struct{}{} }
+        }
+        if i < attempts-1 {
+            time.Sleep(baseDelay)
+        }
+    }
+
+    for ip := range uniq4 { rec.IPv4 = append(rec.IPv4, ip) }
+    for ip := range uniq6 { rec.IPv6 = append(rec.IPv6, ip) }
+    rec.UpdatedAt = time.Now().Unix()
+
+    if len(rec.IPv4) == 0 && len(rec.IPv6) == 0 {
+        return nil, fmt.Errorf("DNS 无记录: %s", domain)
+    }
+    if err := p.save(&rec); err != nil { return nil, err }
+    log.Printf("[dns-quick] %s A=%d AAAA=%d", domain, len(rec.IPv4), len(rec.IPv6))
+    return &rec, nil
+}
+
 func (p *DNSPool) save(rec *dnsRecord) error {
 	return p.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("dns_records"))
@@ -193,13 +231,14 @@ func (p *DNSPool) GetIPs(ctx context.Context, domain string) (ipv4 []string, ipv
 			}
 		}
 	}
-	if needRefresh {
-		var e error
-		rec, e = p.resolveAndStore(ctx, domain)
-		if e != nil && rec == nil {
-			return nil, nil, e
-		}
-	}
+    if needRefresh {
+        // 请求路径走快速解析，减少首请求等待
+        var e error
+        rec, e = p.resolveAndStoreQuick(ctx, domain)
+        if e != nil && rec == nil {
+            return nil, nil, e
+        }
+    }
 	if rec != nil {
 		return rec.IPv4, rec.IPv6, nil
 	}
