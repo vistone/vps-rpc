@@ -188,7 +188,10 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName 
 	if err != nil {
 		return nil, fmt.Errorf("连接失败: %w", err)
 	}
-	ucfg := &utls.Config{ServerName: serverName}
+	ucfg := &utls.Config{
+		ServerName:         serverName,
+		InsecureSkipVerify: true, // 跳过证书验证（IP直连时证书不包含IP SAN）
+	}
 	if len(nextProtos) > 0 {
 		ucfg.NextProtos = nextProtos
 	}
