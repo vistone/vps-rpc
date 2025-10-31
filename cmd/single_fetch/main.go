@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"vps-rpc/client"
@@ -16,8 +17,14 @@ func main() {
 		return
 	}
 
+	// 支持通过环境变量 VPS_RPC_ADDR 覆盖配置地址
+	addr := config.AppConfig.GetServerAddr()
+	if envAddr := os.Getenv("VPS_RPC_ADDR"); envAddr != "" {
+		addr = envAddr
+	}
+	
 	cli, err := client.NewClient(&client.ClientConfig{
-		Address:              config.AppConfig.GetServerAddr(),
+		Address:              addr,
 		Timeout:              config.AppConfig.GetClientDefaultTimeout(),
 		InsecureSkipVerify:   true,
 		EnableConnectionPool: false,
