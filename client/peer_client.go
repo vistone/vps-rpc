@@ -52,6 +52,15 @@ func (c *PeerClient) ExchangeDNS(ctx context.Context, req *rpc.ExchangeDNSReques
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
+	// 关键修复：如果序列化后为空（len=0），添加一个标记字节来区分 ExchangeDNSRequest
+	// 这样服务器端可以通过检查消息长度和第一个字节来正确识别
+	// 对于空的 ExchangeDNSRequest，我们在前面添加 0x01 标记
+	if len(reqData) == 0 {
+		// 空的 ExchangeDNSRequest：添加类型标记 0x01
+		reqData = []byte{0x01} // 类型标记：0x01 = ExchangeDNSRequest
+		log.Printf("[peer-client] ExchangeDNS请求为空，添加类型标记 0x01")
+	}
+
 	reqLen := uint32(len(reqData))
 	var length [4]byte
 	binary.BigEndian.PutUint32(length[:], reqLen)
