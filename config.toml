@@ -54,7 +54,7 @@ multiplier = 2.0
 [admin]
 # 管理服务配置
 # 服务器版本号
-version = "1.0.281"
+version = "1.0.282"
 # 日志缓冲区大小（最多保存的日志条目数量）
 log_buffer_size = 1000
 # 默认最大日志行数
@@ -65,9 +65,9 @@ max_log_lines = 1000
 [dns]
 # DNS 池配置
 enabled = true
-db_path = "./dns_pool.bolt"
+db_path = "./dns_pool.json"   # JSON 文件路径（或目录），不再使用 bbolt
 refresh_interval = "24h"
-blacklist_duration = "6h"  # 兼容字段：当前实现为“无过期黑名单”，该字段不生效
+blacklist_duration = "6h"  # 兼容字段：当前实现为“无过期黑名单”，该字段当前不生效
 
 [peer]
 # 种子节点（公网可达，域名或 IP:端口）。1-3 个即可
