@@ -1,4 +1,8 @@
 # IDE
 .idea/
+
+# Temporary test files
+tmp_*.go
+
 # Optionally ignore workflow until PAT has workflow scope
 .github/workflows/deploy.yml

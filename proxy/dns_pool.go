@@ -64,24 +64,60 @@ func (p *DNSPool) resolveAndStore(ctx context.Context, domain string) (*dnsRecor
 	var rec dnsRecord
 	rec.Domain = domain
 
-	// 多次系统解析刺探，合并去重（某些CDN会轮转VIP）
+	// 增强探测：多次系统解析刺探，合并去重（某些CDN会轮转VIP）
+	// 增加探测次数和变化间隔，以发现更多IP地址
 	uniq4 := map[string]struct{}{}
 	uniq6 := map[string]struct{}{}
-	r := &net.Resolver{}
-	attempts := 8
+	
+	// 使用多个Resolver实例，避免缓存影响
+	attempts := 30 // 增加到30次探测
+	baseDelay := 50 * time.Millisecond // 缩短基础延迟
+	
+	log.Printf("[dns-probe] 开始探测 %s (共%d次)", domain, attempts)
+	
 	for i := 0; i < attempts; i++ {
-		if addrs4, err := r.LookupIP(ctx, "ip4", domain); err == nil {
-			for _, ip := range addrs4 {
-				uniq4[ip.String()] = struct{}{}
-			}
+		// 每次使用新的Resolver实例，清除可能的缓存
+		r := &net.Resolver{}
+		
+		// 并行查询IPv4和IPv6
+		type result struct {
+			ipv4 []net.IP
+			ipv6 []net.IP
+			err4 error
+			err6 error
 		}
-		if addrs6, err := r.LookupIP(ctx, "ip6", domain); err == nil {
-			for _, ip := range addrs6 {
-				uniq6[ip.String()] = struct{}{}
+		resChan := make(chan result, 1)
+		
+		go func() {
+			var res result
+			res.ipv4, res.err4 = r.LookupIP(ctx, "ip4", domain)
+			res.ipv6, res.err6 = r.LookupIP(ctx, "ip6", domain)
+			resChan <- res
+		}()
+		
+		select {
+		case res := <-resChan:
+			if res.err4 == nil {
+				for _, ip := range res.ipv4 {
+					uniq4[ip.String()] = struct{}{}
+				}
 			}
+			if res.err6 == nil {
+				for _, ip := range res.ipv6 {
+					uniq6[ip.String()] = struct{}{}
+				}
+			}
+		case <-ctx.Done():
+			break
 		}
-		time.Sleep(200 * time.Millisecond)
+		
+		// 变化的延迟：50-150ms之间，避免被限流
+		delay := baseDelay + time.Duration(i%10)*10*time.Millisecond
+		if i < attempts-1 {
+			time.Sleep(delay)
+		}
 	}
+	
 	for ip := range uniq4 {
 		rec.IPv4 = append(rec.IPv4, ip)
 	}
@@ -97,7 +133,7 @@ func (p *DNSPool) resolveAndStore(ctx context.Context, domain string) (*dnsRecor
 	if err := p.save(&rec); err != nil {
 		return nil, err
 	}
-	log.Printf("[dns] %s A=%d AAAA=%d", domain, len(rec.IPv4), len(rec.IPv6))
+	log.Printf("[dns] %s A=%d AAAA=%d (探测完成)", domain, len(rec.IPv4), len(rec.IPv6))
 	return &rec, nil
 }
 
@@ -140,6 +176,16 @@ func (p *DNSPool) GetIPs(ctx context.Context, domain string) (ipv4 []string, ipv
 	}
 	rec, _ := p.get(domain)
 	needRefresh := rec == nil
+	
+	// 如果IP数量较少（少于5个），强制触发刷新以丰富IP池
+	if !needRefresh && rec != nil {
+		totalIPs := len(rec.IPv4) + len(rec.IPv6)
+		if totalIPs < 5 {
+			log.Printf("[dns] %s IP数量较少(%d)，强制刷新探测", domain, totalIPs)
+			needRefresh = true
+		}
+	}
+	
 	if !needRefresh && config.AppConfig.DNS.RefreshInterval != "" {
 		if d, e := time.ParseDuration(config.AppConfig.DNS.RefreshInterval); e == nil {
 			if time.Since(time.Unix(rec.UpdatedAt, 0)) > d {
