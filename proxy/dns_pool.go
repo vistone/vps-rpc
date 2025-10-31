@@ -246,13 +246,16 @@ func (p *DNSPool) GetIPs(ctx context.Context, domain string) (ipv4 []string, ipv
 }
 
 // NextIP 轮询选择一个 IP（优先IPv6，其次IPv4；可调整策略）
+// 优化：请求路径使用快速解析模式，避免阻塞请求
 func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bool, err error) {
 	rec, e := p.get(domain)
 	if e != nil {
 		return "", false, e
 	}
 	if rec == nil {
-		if rec, e = p.resolveAndStore(ctx, domain); e != nil {
+		// 请求路径使用快速解析（3次探测，快速返回），避免长时间阻塞
+		// 后台ProbeManager会进行深度探测（30次）以发现更多IP
+		if rec, e = p.resolveAndStoreQuick(ctx, domain); e != nil {
 			return "", false, e
 		}
 	}

@@ -204,14 +204,23 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName 
 }
 
 // buildHTTP2Client 基于 http2.Transport + uTLS 的 http.Client
+// 优化：启用连接复用和更长的空闲超时以最大化复用
 func (c *UTLSClient) buildHTTP2Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
     tr := &http2.Transport{
         DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
             return c.dialUTLS(ctx, network, address, host, helloID, []string{"h2"})
         },
-        ReadIdleTimeout: 30 * time.Second,
+        ReadIdleTimeout:       30 * time.Second,  // 连接空闲超时
+        PingTimeout:           15 * time.Second,   // Ping超时
+        WriteByteTimeout:      10 * time.Second,   // 写入超时
+        MaxReadFrameSize:      1 << 20,            // 1MB最大帧大小
+        PermitProhibitedCipherSuites: false,
+        AllowHTTP:             false,
     }
-    return &http.Client{Timeout: c.config.Timeout, Transport: tr}
+    return &http.Client{
+        Timeout:   c.config.Timeout,
+        Transport: tr,
+    }
 }
 
 // buildHTTP1Client 基于 http.Transport + uTLS 的 http.Client（HTTP/1.1）
