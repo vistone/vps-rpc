@@ -297,17 +297,21 @@ func (s *QuicRpcServer) handleStreamWithConn(conn *quic.Conn, stream *quic.Strea
 				// ExchangeDNSRequest 解析失败（这不应该发生，除非数据损坏）
 				log.Printf("[quic-rpc] ExchangeDNSRequest 解析失败: %v (msgLen=%d)", unmarshalErr, msgLen)
 				// GetPeersRequest: 空消息（完全没有字段）
-				// 只有在其他类型都解析失败时，才尝试 GetPeersRequest
-				// 注意：如果 msgLen == 0，GetPeersRequest 也能解析成功，但这是最后的选择
-				// 因为 ExchangeDNSRequest 已经优先处理了 msgLen == 0 的情况
+				// 关键修复：客户端现在会在空的 GetPeersRequest 前添加类型标记 0x02
+				// 如果 msgLen == 1 且第一个字节是 0x02，这是空的 GetPeersRequest
 				var getPeersReq rpc.GetPeersRequest
-				unmarshalErr2 := proto.Unmarshal(msgData, &getPeersReq)
+				var unmarshalErr2 error
+				if msgLen == 1 && len(msgData) > 0 && msgData[0] == 0x02 {
+					// 客户端添加的类型标记，表示这是空的 GetPeersRequest
+					// 跳过标记字节，使用空字节解析
+					getPeersReq = rpc.GetPeersRequest{}
+					unmarshalErr2 = nil // 标记为成功解析
+					log.Printf("[quic-rpc] ✅ 通过类型标记识别为 GetPeersRequest (空消息，标记=0x02)")
+				} else {
+					// 正常解析（有数据或没有类型标记）
+					unmarshalErr2 = proto.Unmarshal(msgData, &getPeersReq)
+				}
 				if unmarshalErr2 == nil {
-					// 只有在 ExchangeDNSRequest 解析失败时才识别为 GetPeersRequest
-					// 对于 msgLen == 0，这不应该发生（因为 ExchangeDNSRequest 应该先解析成功）
-					if msgLen == 0 {
-						log.Printf("[quic-rpc] 警告：msgLen==0但ExchangeDNS解析失败，作为GetPeersRequest处理")
-					}
 					log.Printf("[quic-rpc] 识别为 GetPeersRequest (msgLen=%d)", msgLen)
                 // 学到对端地址
                 if conn != nil {

@@ -130,6 +130,15 @@ func (c *PeerClient) GetPeers(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
+	// 关键修复：如果序列化后为空（len=0），添加类型标记 0x02 来区分 GetPeersRequest
+	// 这样服务器端可以通过检查消息长度和第一个字节来正确识别
+	// 对于空的 GetPeersRequest，我们在前面添加 0x02 标记
+	if len(reqData) == 0 {
+		// 空的 GetPeersRequest：添加类型标记 0x02
+		reqData = []byte{0x02} // 类型标记：0x02 = GetPeersRequest
+		log.Printf("[peer-client] GetPeers请求为空，添加类型标记 0x02")
+	}
+
 	reqLen := uint32(len(reqData))
 	var length [4]byte
 	binary.BigEndian.PutUint32(length[:], reqLen)
@@ -155,9 +164,30 @@ func (c *PeerClient) GetPeers(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("读取响应失败: %w", err)
 	}
 
+	// 调试：记录响应数据的前几个字节，帮助诊断问题
+	if len(respData) > 0 {
+		hexPrefix := ""
+		maxBytes := 16
+		if len(respData) < maxBytes {
+			maxBytes = len(respData)
+		}
+		for i := 0; i < maxBytes; i++ {
+			hexPrefix += fmt.Sprintf("%02x ", respData[i])
+		}
+		log.Printf("[peer-client] GetPeers响应: len=%d, 前%d字节(hex)=%s", len(respData), maxBytes, hexPrefix)
+	} else {
+		log.Printf("[peer-client] GetPeers响应: 空响应")
+	}
+
 	var resp rpc.GetPeersResponse
 	if err := proto.Unmarshal(respData, &resp); err != nil {
-		return nil, fmt.Errorf("反序列化响应失败: %w", err)
+		// 尝试诊断：可能是返回了错误的消息类型
+		var exchangeDNSResp rpc.ExchangeDNSResponse
+		if err2 := proto.Unmarshal(respData, &exchangeDNSResp); err2 == nil {
+			log.Printf("[peer-client] 错误：服务器返回了 ExchangeDNSResponse 而不是 GetPeersResponse (records=%d)", len(exchangeDNSResp.Records))
+			return nil, fmt.Errorf("服务器返回了错误的消息类型（ExchangeDNSResponse而非GetPeersResponse）")
+		}
+		return nil, fmt.Errorf("反序列化响应失败: %w (响应长度=%d)", err, len(respData))
 	}
 
 	return resp.Peers, nil
