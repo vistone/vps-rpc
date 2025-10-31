@@ -300,15 +300,87 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
         if pm := GetGlobalProbeManager(); pm != nil {
             pm.RegisterDomain(host)
         }
-        if ip, isV6, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
-            selectedIP = ip
-            selectedIsV6 = isV6
-            // 仅替换拨号地址，端口保持443/80按原URL
+        // 双栈并行：若同时存在v4与v6，各挑一个并发请求，先返回者为准
+        if v4s, v6s, e := c.dns.GetIPs(timeoutCtx, host); e == nil && (len(v4s) > 0 || len(v6s) > 0) {
+            // 计算端口
             parsed, _ := url.Parse(req.Url)
             port := "443"
             if parsed != nil && parsed.Scheme == "http" {
                 port = "80"
             }
+            // 候选目标
+            var addrV4, addrV6 string
+            if len(v4s) > 0 { addrV4 = net.JoinHostPort(v4s[0], port) }
+            if len(v6s) > 0 { addrV6 = net.JoinHostPort(v6s[0], port) }
+            // 若同时存在两族，则并发；否则走单一路径
+            if addrV4 != "" && addrV6 != "" {
+                type result struct{ resp *rpc.FetchResponse; ip string; isV6 bool; err error }
+                resCh := make(chan result, 2)
+                // 复制请求以便并发使用独立ctx
+                mkReq := func() (*http.Request, error) {
+                    r2, e2 := http.NewRequestWithContext(timeoutCtx, "GET", req.Url, nil)
+                    if e2 != nil { return nil, e2 }
+                    if len(configPkg.AppConfig.Crawler.DefaultHeaders) > 0 {
+                        for k, v := range configPkg.AppConfig.Crawler.DefaultHeaders {
+                            if r2.Header.Get(k) == "" { r2.Header.Set(k, v) }
+                        }
+                    }
+                    for k, v := range req.Headers { r2.Header.Set(k, v) }
+                    r2.Header.Set("User-Agent", selectUserAgentByTLSClient(req.TlsClient))
+                    return r2, nil
+                }
+                chid := c.getClientHelloID()
+                // 发起函数
+                doOnce := func(targetAddr string, ip string, isV6 bool) {
+                    r2, e2 := mkReq()
+                    if e2 != nil { resCh <- result{nil, ip, isV6, e2}; return }
+                    if ip != "" { r2.Host = host }
+                    // h2
+                    h2c := c.getOrCreateH2Client(host, targetAddr, chid)
+                    st := time.Now()
+                    if resp, e := h2c.Do(r2); e == nil {
+                        defer resp.Body.Close()
+                        body, _ := io.ReadAll(resp.Body)
+                        headers := map[string]string{}
+                        for k, v := range resp.Header { if len(v) > 0 { headers[k] = v[0] } }
+                        if c.dns != nil && ip != "" { _ = c.dns.ReportResult(host, ip, resp.StatusCode); _ = c.dns.ReportLatency(host, ip, time.Since(st).Milliseconds()) }
+                        resCh <- result{&rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, ip, isV6, nil}; return
+                    }
+                    // h1 回退
+                    h1c := c.getOrCreateH1Client(host, targetAddr, chid)
+                    st = time.Now()
+                    if resp, e := h1c.Do(r2); e == nil {
+                        defer resp.Body.Close()
+                        body, _ := io.ReadAll(resp.Body)
+                        headers := map[string]string{}
+                        for k, v := range resp.Header { if len(v) > 0 { headers[k] = v[0] } }
+                        if c.dns != nil && ip != "" { _ = c.dns.ReportResult(host, ip, resp.StatusCode); _ = c.dns.ReportLatency(host, ip, time.Since(st).Milliseconds()) }
+                        resCh <- result{&rpc.FetchResponse{Url: req.Url, StatusCode: int32(resp.StatusCode), Headers: headers, Body: body}, ip, isV6, nil}; return
+                    }
+                    resCh <- result{nil, ip, isV6, fmt.Errorf("both h2/h1 failed")}
+                }
+                go doOnce(addrV6, v6s[0], true)
+                go doOnce(addrV4, v4s[0], false)
+                // 先到先得
+                r := <-resCh
+                if r.err == nil && r.resp != nil {
+                    return r.resp, nil
+                }
+                r2 := <-resCh
+                if r2.err == nil && r2.resp != nil {
+                    return r2.resp, nil
+                }
+                // 并发都失败则继续走原单路逻辑（下面会处理）
+            }
+            // 单一路径（只有一种族）
+            if addrV6 != "" { selectedIP, selectedIsV6, addr = v6s[0], true, addrV6 }
+            if addrV4 != "" { selectedIP, selectedIsV6, addr = v4s[0], false, addrV4 }
+        } else if ip, isV6, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
+            selectedIP = ip
+            selectedIsV6 = isV6
+            parsed, _ := url.Parse(req.Url)
+            port := "443"
+            if parsed != nil && parsed.Scheme == "http" { port = "80" }
             addr = net.JoinHostPort(ip, port)
         }
     }
