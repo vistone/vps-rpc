@@ -19,3 +19,7 @@ vps-rpc*.log
 
 # Optionally ignore workflow until PAT has workflow scope
 .github/workflows/deploy.yml
+dns_pool.json
+dns_pool.json.*
+*.json.bak
+*.json.backup
