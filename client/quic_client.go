@@ -76,7 +76,6 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
 		MaxIncomingStreams:   100,
 	}
 
-	connStart := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -85,7 +84,6 @@ func NewQuicClient(address string, insecureSkipVerify bool) (*QuicClient, error)
 	if err != nil {
 		return nil, fmt.Errorf("QUIC连接失败: %w", err)
 	}
-	// 注意：connLatency已测量，但不输出日志避免干扰（可通过日志级别控制）
 
 	return &QuicClient{
 		address:   address,
