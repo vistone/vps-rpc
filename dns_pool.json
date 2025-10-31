@@ -1,0 +1,16 @@
+{
+  "kh.google.com": {
+    "domain": "kh.google.com",
+    "ipv4": [],
+    "ipv6": [],
+    "updated_at": 0,
+    "next_index4": 0,
+    "next_index6": 0,
+    "next_prefer_v6": false,
+    "blacklist": {},
+    "whitelist": {},
+    "ewma_latency4": 0,
+    "ewma_latency6": 0
+  }
+}
+
