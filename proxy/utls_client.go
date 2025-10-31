@@ -20,6 +20,13 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
+// 全局预建连接池：所有UTLSClient实例共享
+var (
+	globalPrewarmedH2Clients = make(map[string]*http.Client)
+	globalPrewarmMu          sync.RWMutex
+	globalPrewarmOnce        sync.Once
+)
+
 // UTLSClient 是基于uTLS的HTTP客户端
 // 用于执行伪装TLS指纹的HTTP请求
 type UTLSClient struct {
@@ -29,7 +36,7 @@ type UTLSClient struct {
 	config *UTLSConfig
 	// dns DNS 池实例（可选）
 	dns *DNSPool
-	// 连接复用：按 host 缓存 http.Client（h2/h1 分开）
+	// 连接复用：按 host+IP 缓存 http.Client（h2/h1 分开）
 	mu        sync.Mutex
 	h2Clients map[string]*http.Client
 	h1Clients map[string]*http.Client
@@ -62,7 +69,11 @@ func NewUTLSClient(cfg *UTLSConfig) *UTLSClient {
 		cfg.Timeout = 30 * time.Second
 	}
 
-	client := &UTLSClient{config: cfg, h2Clients: map[string]*http.Client{}, h1Clients: map[string]*http.Client{}}
+	client := &UTLSClient{
+		config:    cfg,
+		h2Clients: map[string]*http.Client{},
+		h1Clients: map[string]*http.Client{},
+	}
 	// 复用全局DNS池
 	if gp := GetGlobalDNSPool(); gp != nil {
 		client.dns = gp
@@ -72,6 +83,158 @@ func NewUTLSClient(cfg *UTLSConfig) *UTLSClient {
 		}
 	}
 	return client
+}
+
+// PrewarmConnections 预建连接池：为DNS池中的所有IP建立热连接
+// 在系统启动时调用，预热所有已知IP的连接，避免首次请求时的连接建立开销
+// 这是一个全局函数，所有UTLSClient实例共享预建的连接池
+func PrewarmConnections(ctx context.Context) {
+	// 只执行一次预热
+	globalPrewarmOnce.Do(func() {
+		dnsPool := GetGlobalDNSPool()
+		if dnsPool == nil {
+			log.Printf("[prewarm] DNS池未启用，跳过连接预热")
+			return
+		}
+
+		// 获取所有域名的所有IP
+		domainIPs := dnsPool.GetAllDomainsAndIPs()
+		totalIPs := 0
+		for _, ips := range domainIPs {
+			totalIPs += len(ips)
+		}
+
+		if totalIPs == 0 {
+			log.Printf("[prewarm] 未发现任何IP地址，跳过连接预热")
+			return
+		}
+
+		log.Printf("[prewarm] 开始预热连接池：%d个域名，共%d个IP", len(domainIPs), totalIPs)
+
+		// 创建一个临时UTLSClient用于构建连接（使用默认配置）
+		tempClient := &UTLSClient{
+			config: &UTLSConfig{
+				ClientType: rpc.TLSClientType_CHROME, // 使用Chrome作为默认指纹
+				Timeout:    30 * time.Second,
+			},
+			dns: dnsPool,
+		}
+
+		// 并发预建立连接，但限制并发数避免过载
+		sem := make(chan struct{}, 20) // 最多20个并发
+		var wg sync.WaitGroup
+		successCount := 0
+		failCount := 0
+		var countMu sync.Mutex
+
+		chid := tempClient.getClientHelloID()
+
+		// 为每个IP预建立连接
+		for domain, ips := range domainIPs {
+			for _, addr := range ips {
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(d, a string) {
+					defer wg.Done()
+					defer func() { <-sem }()
+
+					// 解析IP地址
+					host, port, err := net.SplitHostPort(a)
+					if err != nil {
+						countMu.Lock()
+						failCount++
+						countMu.Unlock()
+						return
+					}
+
+					// 创建预建的HTTP/2客户端
+					key := d + "|" + a
+					h2c := tempClient.buildHTTP2Client(d, a, chid)
+
+					// 尝试发送一个HEAD请求来建立连接（轻量级）
+					// 使用很短的超时，仅用于建立连接，不等待完整响应
+					prewarmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					req, _ := http.NewRequestWithContext(prewarmCtx, "HEAD", "https://"+host+":"+port, nil)
+					req.Host = d // 设置Host头为域名
+					resp, err := h2c.Do(req)
+					cancel()
+
+					if err == nil && resp != nil {
+						resp.Body.Close() // 关闭响应体
+						// 连接建立成功，缓存到全局预建池
+						globalPrewarmMu.Lock()
+						globalPrewarmedH2Clients[key] = h2c
+						globalPrewarmMu.Unlock()
+						countMu.Lock()
+						successCount++
+						countMu.Unlock()
+						log.Printf("[prewarm] ✓ %s -> %s", d, a)
+					} else {
+						// 连接失败，但不影响后续使用（后续请求时会重新建立）
+						countMu.Lock()
+						failCount++
+						countMu.Unlock()
+					}
+				}(domain, addr)
+			}
+		}
+
+		wg.Wait()
+		log.Printf("[prewarm] 连接预热完成：成功=%d 失败=%d 总计=%d", successCount, failCount, totalIPs)
+	})
+}
+
+// PrewarmSingleConnection 为单个IP预建连接（当发现新IP时调用）
+// 用于在运行时动态预热新发现的IP，保持连接池始终是热的
+func PrewarmSingleConnection(ctx context.Context, domain, address string) {
+	dnsPool := GetGlobalDNSPool()
+	if dnsPool == nil {
+		return
+	}
+
+	key := domain + "|" + address
+
+	// 检查是否已经预热过
+	globalPrewarmMu.RLock()
+	if _, ok := globalPrewarmedH2Clients[key]; ok {
+		globalPrewarmMu.RUnlock()
+		return // 已经预热过
+	}
+	globalPrewarmMu.RUnlock()
+
+	// 创建临时客户端用于预热
+	tempClient := &UTLSClient{
+		config: &UTLSConfig{
+			ClientType: rpc.TLSClientType_CHROME,
+			Timeout:    30 * time.Second,
+		},
+		dns: dnsPool,
+	}
+
+	chid := tempClient.getClientHelloID()
+	h2c := tempClient.buildHTTP2Client(domain, address, chid)
+
+	// 解析IP地址
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return
+	}
+
+	// 发送HEAD请求建立连接
+	prewarmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	req, _ := http.NewRequestWithContext(prewarmCtx, "HEAD", "https://"+host+":"+port, nil)
+	req.Host = domain
+	resp, err := h2c.Do(req)
+	cancel()
+
+	if err == nil && resp != nil {
+		resp.Body.Close()
+		// 连接建立成功，加入全局预建池
+		globalPrewarmMu.Lock()
+		globalPrewarmedH2Clients[key] = h2c
+		globalPrewarmMu.Unlock()
+		log.Printf("[prewarm] ✓ 新IP预热成功: %s -> %s", domain, address)
+	}
 }
 
 // UA 选择：根据 TlsClient 类型选择与 uTLS 指纹一致的 UA 候选并随机取一
@@ -253,17 +416,38 @@ func (c *UTLSClient) buildHTTP1Client(host, address string, helloID *utls.Client
 // 获取/创建可复用的 h2 客户端
 // 注意：HTTP2 Transport的连接复用是基于目标地址（IP:port）的
 // 为了最大化连接复用，我们按 host+IP 的组合作为key，同一IP的连接会被复用
+// 优先使用全局预建的连接池，如果没有则创建新连接并缓存
 func (c *UTLSClient) getOrCreateH2Client(host, address string, helloID *utls.ClientHelloID) *http.Client {
+	key := host + "|" + address
+
+	// 优先检查全局预建的连接池
+	globalPrewarmMu.RLock()
+	if prewarmed, ok := globalPrewarmedH2Clients[key]; ok && prewarmed != nil {
+		globalPrewarmMu.RUnlock()
+		// 同时缓存到当前实例，后续直接使用
+		c.mu.Lock()
+		c.h2Clients[key] = prewarmed
+		c.mu.Unlock()
+		return prewarmed
+	}
+	globalPrewarmMu.RUnlock()
+
+	// 检查当前实例的缓存
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// 使用 host+address 作为key，确保同一IP的连接被复用
-	// 同时允许不同IP有各自的连接池
-	key := host + "|" + address
 	if cli, ok := c.h2Clients[key]; ok && cli != nil {
 		return cli
 	}
+
+	// 创建新客户端并缓存
 	cli := c.buildHTTP2Client(host, address, helloID)
 	c.h2Clients[key] = cli
+
+	// 同时加入全局预建池（后续其他实例也可以复用）
+	globalPrewarmMu.Lock()
+	globalPrewarmedH2Clients[key] = cli
+	globalPrewarmMu.Unlock()
+
 	return cli
 }
 

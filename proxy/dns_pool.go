@@ -462,6 +462,57 @@ func (p *DNSPool) GetIPs(ctx context.Context, domain string) (ipv4 []string, ipv
 	return nil, nil, fmt.Errorf("未获取到记录: %s", domain)
 }
 
+// GetAllDomainsAndIPs 返回所有域名的所有IP地址（用于预建连接池）
+// 返回值: map[domain][]{ip:port}
+func (p *DNSPool) GetAllDomainsAndIPs() map[string][]string {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	result := make(map[string][]string)
+	for domain, rec := range p.records {
+		if rec == nil {
+			continue
+		}
+		ips := make([]string, 0)
+		// 收集所有IPv4和IPv6（排除黑名单）
+		for _, ip := range rec.IPv4 {
+			if !rec.Blacklist[ip] {
+				ips = append(ips, net.JoinHostPort(ip, "443"))
+			}
+		}
+		for _, ip := range rec.IPv6 {
+			if !rec.Blacklist[ip] {
+				ips = append(ips, net.JoinHostPort(ip, "443"))
+			}
+		}
+		// 合并白名单IP
+		for ip := range rec.Whitelist {
+			parsed := net.ParseIP(ip)
+			if parsed == nil {
+				continue
+			}
+			addr := net.JoinHostPort(ip, "443")
+			// 去重
+			exists := false
+			for _, existing := range ips {
+				if existing == addr {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				ips = append(ips, addr)
+			}
+		}
+		if len(ips) > 0 {
+			result[domain] = ips
+		}
+	}
+	return result
+}
+
 // NextIP 轮询选择一个 IP（优先IPv6，其次IPv4；可调整策略）
 // 优化：请求路径使用快速解析模式，避免阻塞请求
 func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bool, err error) {
@@ -597,19 +648,28 @@ func (p *DNSPool) ReportResult(domain, ip string, status int) error {
     if rec.Blacklist == nil { rec.Blacklist = map[string]bool{} }
     if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
     // 确保观测到的IP被纳入记录
+    var ipPresent bool // 标识IP是否已存在于记录中
     if net.ParseIP(ip) != nil && net.ParseIP(ip).To4() == nil {
         // IPv6
-        present := false
-        for _, v := range rec.IPv6 { if v == ip { present = true; break } }
-        if !present {
+        for _, v := range rec.IPv6 { 
+            if v == ip { 
+                ipPresent = true
+                break 
+            } 
+        }
+        if !ipPresent {
             rec.IPv6 = append(rec.IPv6, ip)
             log.Printf("[dns-pool] add %s ip=%s v6=true", domain, ip)
         }
     } else {
         // IPv4 或未知按v4处理
-        present := false
-        for _, v := range rec.IPv4 { if v == ip { present = true; break } }
-        if !present {
+        for _, v := range rec.IPv4 { 
+            if v == ip { 
+                ipPresent = true
+                break 
+            } 
+        }
+        if !ipPresent {
             rec.IPv4 = append(rec.IPv4, ip)
             log.Printf("[dns-pool] add %s ip=%s v6=false", domain, ip)
         }
@@ -620,6 +680,13 @@ func (p *DNSPool) ReportResult(domain, ip string, status int) error {
     } else if status == 200 {
         delete(rec.Blacklist, ip)
         rec.Whitelist[ip] = true
+        // 当IP返回200时，异步预热该IP的连接（不阻塞当前请求）
+        // 无论是新IP还是已有IP，都尝试预热，确保连接池是热的
+        go func(d, i string) {
+            ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+            defer cancel()
+            PrewarmSingleConnection(ctx, d, net.JoinHostPort(i, "443"))
+        }(domain, ip)
     }
     p.mu.Unlock()
     return p.persist()
