@@ -242,12 +242,16 @@ func NewPeerSyncManager() *PeerSyncManager {
             if ip == nil {
                 continue
             }
-            ip = ip.To4()
-            if ip == nil {
-                // 保留IPv6字符串
-                ip = ip
+            // 规范化为IPv4（若可），否则保留原始IPv6/非IPv4地址
+            orig := ip
+            if v4 := ip.To4(); v4 != nil {
+                ip = v4
+            } else {
+                ip = orig
             }
-            p.selfIPs[ip.String()] = true
+            if ip != nil {
+                p.selfIPs[ip.String()] = true
+            }
             // 生成 host:port 形式
             host := ip.String()
             if strings.Contains(host, ":") {

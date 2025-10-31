@@ -30,7 +30,7 @@ func main() {
 	defer cli.Close()
 
     url := "https://kh.google.com/rt/earth/PlanetoidMetadata"
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+    ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
     // 模拟浏览器常见请求头（如需严格对齐，可进一步调整）
@@ -46,6 +46,7 @@ func main() {
         "TE":               "trailers",
     }
 
+    start := time.Now()
     resp, err := cli.Fetch(ctx, &rpc.FetchRequest{Url: url, Headers: headers})
 	if err != nil {
 		fmt.Println("请求失败:", err)
@@ -55,7 +56,11 @@ func main() {
 		fmt.Printf("返回错误: %s\n", resp.Error)
 		return
 	}
-    fmt.Printf("URL=%s\nStatus=%d\nBody=%d bytes\n", resp.Url, resp.StatusCode, len(resp.Body))
+    cost := time.Since(start).Milliseconds()
+    ip := resp.Headers["X-VPS-IP"]
+    vpsLatency := resp.Headers["X-VPS-LatencyMs"]
+    if vpsLatency == "" { vpsLatency = "-" }
+    fmt.Printf("URL=%s\nStatus=%d\nBody=%d bytes\nCost=%d ms\nIP=%s (server-latency=%sms)\n", resp.Url, resp.StatusCode, len(resp.Body), cost, ip, vpsLatency)
     fmt.Println("Headers:")
     for k, v := range resp.Headers {
         fmt.Printf("  %s: %s\n", k, v)

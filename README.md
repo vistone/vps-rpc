@@ -1,15 +1,15 @@
-VPS-RPC 高速爬虫代理（gRPC over TLS，uTLS 指纹伪装，IPv4/IPv6 直连，DNS 池与黑白名单，本地验证，零配置TLS，自举种子）
+VPS-RPC 高速数据爬虫代理（uTLS/QUIC/gRPC，IPv4/IPv6 直连，DNS 池与黑白名单，零配置 TLS，观测共享与本地验证）
 
 ## 特性
-- uTLS 指纹伪装：优先 HTTP/2，失败回退 HTTP/1.1，标准库兜底；Header 外部化
-- DNS IP 池：A/AAAA 解析、轮询、403 入黑、200 解封、自动刷新
+- uTLS 指纹伪装：h2 优先，h1 回退，std 兜底；Header 外部化
+- DNS IP 池：A/AAAA、轮询、403 入黑、200 解封、自动刷新
 - IPv4/IPv6 自动探测：可用族自动选择；IPv6 直连绑定本机全局地址
 - 直连 IP + 域名回退：SNI/Host 保持域名，确保证书与路由正确
-- 观测报告共享、本地验证：仅共享 200/403 报告，本地复测后才落黑/解封
-- 种子自举（Peer seeds）：配置预留（服务未启用）
+- 观测报告共享 + 本地验证：仅共享 200/403 报告，本地复测后才落黑/解封
+- 种子自举（Peer seeds）：配置预留（Peer/Center 规划中）
 - 零配置 TLS：启动自动加载/生成证书
 
-文档索引见 `docs/INDEX.md`（架构、配置、部署、设计决策、对照清单）。
+文档索引见 `docs/INDEX.md`（架构、配置、部署、设计决策、对照清单）。完整概览参见 `docs/README.md`。
 
 ## 快速开始
 ```bash
@@ -45,8 +45,18 @@ TE = "trailers"
 ## 运行与测试
 - 开发运行：`go run .`
 - 单 URL 测试：`go build -o single_fetch ./cmd/single_fetch && ./single_fetch`
-- DNS 探测：`go build -o dns_probe ./cmd/dns_probe && ./dns_probe --domain example.com`
+- DNS 探测：`go build -o dns_probe ./cmd/dns_probe && ./dns_probe --domain example.com --path /`
 - 集成测试：`go test ./integration_test -v`
+
+## 生成 protobuf 代码
+```bash
+# 安装工具
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+# 生成服务与管理接口
+protoc --go_out=. --go-grpc_out=. rpc/service.proto
+protoc --go_out=. --go-grpc_out=. rpc/admin_service.proto
+```
 
 更多部署方式见 `docs/DEPLOY.md`（含 systemd 示例）。
 

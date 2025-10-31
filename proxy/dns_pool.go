@@ -39,6 +39,12 @@ type DNSPool struct {
     mu       sync.RWMutex
     records  map[string]*dnsRecord
     filename string
+    // 持久化节流与热加载
+    persistMu    sync.Mutex
+    persistTimer *time.Timer
+    lastPersist  time.Time
+    fileModTime  time.Time
+    closed       chan struct{}
 }
 
 func NewDNSPool(path string) (*DNSPool, error) {
@@ -51,6 +57,7 @@ func NewDNSPool(path string) (*DNSPool, error) {
     pool := &DNSPool{
         records:  make(map[string]*dnsRecord),
         filename: path,
+        closed:   make(chan struct{}),
     }
     if err := pool.loadFromDisk(); err != nil {
         if !errors.Is(err, os.ErrNotExist) {
@@ -61,10 +68,24 @@ func NewDNSPool(path string) (*DNSPool, error) {
         // create empty file lazily on first persist
     }
     log.Printf("[dns-pool] using file: %s", path)
+    // 启动热加载后台任务（轻量轮询，避免引入外部依赖）
+    go pool.backgroundHotReload()
     return pool, nil
 }
 
-func (p *DNSPool) Close() error { return nil }
+func (p *DNSPool) Close() error {
+    // 停止热加载轮询
+    select { case <-p.closed: default: close(p.closed) }
+    // 立即落盘（若有尚未触发的节流保存）
+    p.persistMu.Lock()
+    if p.persistTimer != nil {
+        p.persistTimer.Stop()
+        p.persistTimer = nil
+    }
+    p.persistMu.Unlock()
+    p.persistNow()
+    return nil
+}
 
 func (p *DNSPool) loadFromDisk() error {
     data, err := os.ReadFile(p.filename)
@@ -81,30 +102,90 @@ func (p *DNSPool) loadFromDisk() error {
     for _, rec := range p.records {
         if rec.Blacklist == nil { rec.Blacklist = map[string]bool{} }
         if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
+        // 将白名单中的IP并入 IPv4/IPv6 列表，保证可选候选包含白名单
+        if len(rec.Whitelist) > 0 {
+            present4 := map[string]struct{}{}
+            present6 := map[string]struct{}{}
+            for _, ip := range rec.IPv4 { present4[ip] = struct{}{} }
+            for _, ip := range rec.IPv6 { present6[ip] = struct{}{} }
+            for ip := range rec.Whitelist {
+                parsed := net.ParseIP(ip)
+                if parsed == nil { continue }
+                if parsed.To4() != nil {
+                    if _, ok := present4[ip]; !ok { rec.IPv4 = append(rec.IPv4, ip); present4[ip] = struct{}{} }
+                } else {
+                    if _, ok := present6[ip]; !ok { rec.IPv6 = append(rec.IPv6, ip); present6[ip] = struct{}{} }
+                }
+            }
+        }
     }
     p.mu.Unlock()
+    if fi, err := os.Stat(p.filename); err == nil {
+        p.persistMu.Lock()
+        p.fileModTime = fi.ModTime()
+        p.persistMu.Unlock()
+    }
     return nil
 }
 
 func (p *DNSPool) persist() error {
+    // 改为节流批量写：延迟合并 500ms 内的多次保存请求
+    const throttle = 500 * time.Millisecond
+    p.persistMu.Lock()
+    defer p.persistMu.Unlock()
+    if p.persistTimer != nil {
+        if p.persistTimer.Stop() {
+            // 重置定时器
+        }
+    }
+    p.persistTimer = time.AfterFunc(throttle, func() {
+        p.persistNow()
+    })
+    return nil
+}
+
+func (p *DNSPool) persistNow() {
     p.mu.RLock()
     data, err := json.MarshalIndent(p.records, "", "  ")
     p.mu.RUnlock()
-    if err != nil {
-        return err
-    }
-    if err := os.MkdirAll(filepath.Dir(p.filename), 0o755); err != nil {
-        return err
-    }
+    if err != nil { log.Printf("[dns-pool] marshal failed: %v", err); return }
+    if err := os.MkdirAll(filepath.Dir(p.filename), 0o755); err != nil { log.Printf("[dns-pool] mkdir failed: %v", err); return }
     tmp := p.filename + ".tmp"
-    if err := os.WriteFile(tmp, data, 0o644); err != nil {
-        return err
-    }
-    if err := os.Rename(tmp, p.filename); err != nil {
-        return err
-    }
+    if err := os.WriteFile(tmp, data, 0o644); err != nil { log.Printf("[dns-pool] write tmp failed: %v", err); return }
+    if err := os.Rename(tmp, p.filename); err != nil { log.Printf("[dns-pool] rename failed: %v", err); return }
+    p.persistMu.Lock()
+    p.lastPersist = time.Now()
+    if fi, err := os.Stat(p.filename); err == nil { p.fileModTime = fi.ModTime() }
+    p.persistMu.Unlock()
     log.Printf("[dns-pool] persisted %d domains to %s", len(p.records), p.filename)
-    return nil
+}
+
+// 背景热加载：定期检查文件是否被外部修改（如手工或工具写入），若变更则加载
+func (p *DNSPool) backgroundHotReload() {
+    ticker := time.NewTicker(2 * time.Second)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-p.closed:
+            return
+        case <-ticker.C:
+        }
+        p.persistMu.Lock()
+        lastPersist := p.lastPersist
+        lastSeen := p.fileModTime
+        p.persistMu.Unlock()
+        fi, err := os.Stat(p.filename)
+        if err != nil { continue }
+        mod := fi.ModTime()
+        // 若文件修改时间晚于我们上次持久化，视为外部修改
+        if mod.After(lastSeen) && mod.After(lastPersist.Add(100*time.Millisecond)) {
+            if err := p.loadFromDisk(); err != nil {
+                log.Printf("[dns-pool] hot-reload failed: %v", err)
+            } else {
+                log.Printf("[dns-pool] hot-reloaded from %s", p.filename)
+            }
+        }
+    }
 }
 
 // resolveAndStore 解析域名A/AAAA并存储
@@ -155,8 +236,8 @@ func (p *DNSPool) resolveAndStore(ctx context.Context, domain string) (*dnsRecor
 					uniq6[ip.String()] = struct{}{}
 				}
 			}
-		case <-ctx.Done():
-			break
+        case <-ctx.Done():
+            return nil, ctx.Err()
 		}
 		
 		// 变化的延迟：50-150ms之间，避免被限流
@@ -231,14 +312,56 @@ func (p *DNSPool) save(rec *dnsRecord) error {
         existing = &dnsRecord{Domain: rec.Domain}
         p.records[rec.Domain] = existing
     }
-    existing.IPv4 = append([]string(nil), rec.IPv4...)
-    existing.IPv6 = append([]string(nil), rec.IPv6...)
+    // 合并 IPv4：保留已有顺序，追加新发现（去重）
+    if len(existing.IPv4) == 0 {
+        existing.IPv4 = append([]string(nil), rec.IPv4...)
+    } else {
+        present := map[string]struct{}{}
+        for _, ip := range existing.IPv4 { present[ip] = struct{}{} }
+        for _, ip := range rec.IPv4 {
+            if _, ok := present[ip]; !ok {
+                existing.IPv4 = append(existing.IPv4, ip)
+                present[ip] = struct{}{}
+            }
+        }
+    }
+    // 合并 IPv6：保留已有顺序，追加新发现（去重）
+    if len(existing.IPv6) == 0 {
+        existing.IPv6 = append([]string(nil), rec.IPv6...)
+    } else {
+        present6 := map[string]struct{}{}
+        for _, ip := range existing.IPv6 { present6[ip] = struct{}{} }
+        for _, ip := range rec.IPv6 {
+            if _, ok := present6[ip]; !ok {
+                existing.IPv6 = append(existing.IPv6, ip)
+                present6[ip] = struct{}{}
+            }
+        }
+    }
     if existing.Blacklist == nil { existing.Blacklist = map[string]bool{} }
     if existing.Whitelist == nil { existing.Whitelist = map[string]bool{} }
     existing.UpdatedAt = rec.UpdatedAt
+    // 持久化轮询状态，确保重启/热加载后延续轮询进度
+    // 若来者未显式设置索引（为0），则保留已有索引，避免被解析刷新覆盖成0
+    if rec.NextIndex4 != 0 {
+        existing.NextIndex4 = rec.NextIndex4 % max(1, len(existing.IPv4))
+    } else if existing.NextIndex4 >= len(existing.IPv4) {
+        existing.NextIndex4 = 0
+    }
+    if rec.NextIndex6 != 0 {
+        existing.NextIndex6 = rec.NextIndex6 % max(1, len(existing.IPv6))
+    } else if existing.NextIndex6 >= len(existing.IPv6) {
+        existing.NextIndex6 = 0
+    }
+    // NextPreferV6：仅当调用者显式改变时更新；否则保留
+    if rec.NextPreferV6 != existing.NextPreferV6 {
+        existing.NextPreferV6 = rec.NextPreferV6
+    }
     p.mu.Unlock()
     return p.persist()
 }
+
+func max(a, b int) int { if a > b { return a }; return b }
 
 // MergeFromPeer 将对等节点返回的DNS记录合并入本地数据库（仅合并IPv4/IPv6，忽略黑白名单）
 func (p *DNSPool) MergeFromPeer(records map[string]*rpc.DNSRecord) error {
@@ -264,6 +387,20 @@ func (p *DNSPool) MergeFromPeer(records map[string]*rpc.DNSRecord) error {
         if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
         for _, ip := range r.Ipv4 { rec.Whitelist[ip] = true }
         for _, ip := range r.Ipv6 { rec.Whitelist[ip] = true }
+        // 白名单 IP 并入候选列表
+        seen4 := map[string]struct{}{}
+        seen6 := map[string]struct{}{}
+        for _, ip := range rec.IPv4 { seen4[ip] = struct{}{} }
+        for _, ip := range rec.IPv6 { seen6[ip] = struct{}{} }
+        for ip := range rec.Whitelist {
+            parsed := net.ParseIP(ip)
+            if parsed == nil { continue }
+            if parsed.To4() != nil {
+                if _, ok := seen4[ip]; !ok { rec.IPv4 = append(rec.IPv4, ip); seen4[ip] = struct{}{} }
+            } else {
+                if _, ok := seen6[ip]; !ok { rec.IPv6 = append(rec.IPv6, ip); seen6[ip] = struct{}{} }
+            }
+        }
         rec.UpdatedAt = time.Now().Unix()
     }
     p.mu.Unlock()
@@ -325,19 +462,56 @@ func (p *DNSPool) GetIPs(ctx context.Context, domain string) (ipv4 []string, ipv
 // NextIP 轮询选择一个 IP（优先IPv6，其次IPv4；可调整策略）
 // 优化：请求路径使用快速解析模式，避免阻塞请求
 func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bool, err error) {
-	rec, e := p.get(domain)
-	if e != nil {
-		return "", false, e
-	}
-	if rec == nil {
+	p.mu.Lock()
+	rec := p.records[domain]
+	needResolve := rec == nil
+	p.mu.Unlock()
+	
+	if needResolve {
 		// 请求路径使用快速解析（3次探测，快速返回），避免长时间阻塞
 		// 后台ProbeManager会进行深度探测（30次）以发现更多IP
+		var e error
 		if rec, e = p.resolveAndStoreQuick(ctx, domain); e != nil {
 			return "", false, e
 		}
+		// 解析后重新获取内存中的记录
+		p.mu.Lock()
+		rec = p.records[domain]
+		p.mu.Unlock()
+		if rec == nil {
+			return "", false, fmt.Errorf("解析后仍无记录: %s", domain)
+		}
 	}
+	
 	allowV4 := HasIPv4()
 	allowV6 := HasIPv6()
+	
+    // 直接操作内存中的记录，确保索引更新生效
+	p.mu.Lock()
+	rec = p.records[domain]
+	if rec == nil {
+		p.mu.Unlock()
+		return "", false, fmt.Errorf("记录不存在: %s", domain)
+	}
+	if rec.Blacklist == nil { rec.Blacklist = map[string]bool{} }
+	if rec.Whitelist == nil { rec.Whitelist = map[string]bool{} }
+    // 将白名单并入候选列表（保证可轮询）
+    if len(rec.Whitelist) > 0 {
+        seen4 := map[string]struct{}{}
+        seen6 := map[string]struct{}{}
+        for _, ipx := range rec.IPv4 { seen4[ipx] = struct{}{} }
+        for _, ipx := range rec.IPv6 { seen6[ipx] = struct{}{} }
+        for ipx := range rec.Whitelist {
+            parsed := net.ParseIP(ipx)
+            if parsed == nil { continue }
+            if parsed.To4() != nil {
+                if _, ok := seen4[ipx]; !ok { rec.IPv4 = append(rec.IPv4, ipx); seen4[ipx] = struct{}{} }
+            } else {
+                if _, ok := seen6[ipx]; !ok { rec.IPv6 = append(rec.IPv6, ipx); seen6[ipx] = struct{}{} }
+            }
+        }
+    }
+	
 	// 严格轮询：两族都可用时按 NextPreferV6 交替；否则按可用族
 	tryV6First := allowV6 && (!allowV4 || rec.NextPreferV6)
 	// 先尝试V6
@@ -350,7 +524,8 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
 				if allowV4 && allowV6 {
 					rec.NextPreferV6 = false
 				}
-				_ = p.save(rec)
+				p.mu.Unlock()
+				if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
 				return candidate, true, nil
 			}
 		}
@@ -364,7 +539,8 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
 				if allowV4 && allowV6 {
 					rec.NextPreferV6 = true
 				}
-				_ = p.save(rec)
+				p.mu.Unlock()
+				if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
 				return candidate, false, nil
 			}
 		}
@@ -379,11 +555,13 @@ func (p *DNSPool) NextIP(ctx context.Context, domain string) (ip string, isV6 bo
 				if allowV4 && allowV6 {
 					rec.NextPreferV6 = false
 				}
-				_ = p.save(rec)
+				p.mu.Unlock()
+				if err := p.persist(); err != nil { log.Printf("[dns-pool] persist failed: %v", err) }
 				return candidate, true, nil
 			}
 		}
 	}
+	p.mu.Unlock()
 	return "", false, fmt.Errorf("无可用IP: %s", domain)
 }
 

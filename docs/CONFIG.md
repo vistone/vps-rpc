@@ -22,6 +22,7 @@
 - `default_timeout` (duration): 抓取默认超时，默认 30s。
 - `max_concurrent_requests` (int): 最大并发请求数。
 - `user_agent` (string): 默认 UA，可被请求覆盖。
+- `dedupe_window` (duration): 去重窗口（相同域名+IP 在窗口内不重复抓取），如 `60s`。
 
 #### [crawler.default_headers]
 - 可配置任意请求头；请求时同名优先生效。
@@ -31,6 +32,10 @@
 - `db_path` (string): bbolt 数据库路径，例如 `./dns_pool.bolt`。
 - `refresh_interval` (duration): 记录刷新间隔，例如 `24h`。
 - `blacklist_duration` (duration): 兼容字段，当前为“无过期黑名单”，该字段不生效（保留以兼容旧配置）。
+- `resolvers` ([]string): 额外 DNS 解析器（全球多地区），如 `"8.8.8.8:53"`。
+
+### [tls]
+- `default_client_type` (string): 默认 TLS 客户端类型（uTLS 指纹），当未指定时生效。
 
 ### [logging]
 - `level` (string): `debug|info|warn|error`，默认 `info`。
@@ -55,9 +60,16 @@
 
 ### [peer]
 - `seeds` ([]string): 预留对等种子，当前仅配置预留，未启用。
+- `my_addr` (string): 本节点对外可达地址（host:port），用于上报给对端。
+- `sync_interval` (duration): 互发现同步周期，如 `5s`、`1m`。
+
+### [center]
+- `address` (string): 中心地址（host:port），例如 `tile0.zeromaps.cn:4242`。
+- `heartbeat_interval` (duration): 心跳周期，如 `2s`。
 
 ## 与实现的关系
 
 - `server.host`、`tls_cert_file`、`tls_key_file` 不再支持；系统自动在 `data/tls/` 处理证书。
 - `dns.blacklist_duration` 为兼容字段，当前实现为“无过期黑名单”。
 - IPv4/IPv6 能力自动探测；IPv6 直连绑定本机全局地址。
+ - `peer` 与 `center` 为进行中能力，部分功能可能按编译期/运行时开关逐步开放。

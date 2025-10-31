@@ -29,6 +29,13 @@ func main() {
 		config.AppConfig.Logging.Format,
 	)
 
+	// 启动后进行一次集中配置校验并输出告警
+	if warns := config.AppConfig.Validate(); len(warns) > 0 {
+		for _, w := range warns {
+			log.Warnf("配置校验警告: %s", w)
+		}
+	}
+
 	// 记录程序启动日志（包含版本信息）
 	version := config.AppConfig.GetAdminVersion()
 	log.Infof("正在启动 VPS-RPC 爬虫代理服务器... 版本: %s", version)
@@ -44,15 +51,16 @@ func main() {
 	stats := server.NewStatsCollector()
 
 	// 初始化全局 DNS 池与 ProbeManager
-	var probe *proxy.ProbeManager
-	var dnsPool *proxy.DNSPool
+    var probe *proxy.ProbeManager
+    var dnsPool *proxy.DNSPool
 	if config.AppConfig.DNS.Enabled && config.AppConfig.DNS.DBPath != "" {
 		if p, err := proxy.NewDNSPool(config.AppConfig.DNS.DBPath); err == nil {
-			dnsPool = p
+            dnsPool = p
 			proxy.SetGlobalDNSPool(p)
 			probe = proxy.NewProbeManager(p)
 			proxy.SetGlobalProbeManager(probe) // 设置全局ProbeManager
 			defer probe.Close()
+            defer dnsPool.Close()
 		}
 	}
 

@@ -1,16 +1,31 @@
 {
   "kh.google.com": {
     "domain": "kh.google.com",
-    "ipv4": [],
-    "ipv6": [],
-    "updated_at": 0,
-    "next_index4": 0,
+    "ipv4": [
+      "142.250.73.78",
+      "142.250.217.110",
+      "142.250.217.78",
+      "142.250.69.174",
+      "142.250.73.110",
+      "142.250.73.142",
+      "142.251.33.78"
+    ],
+    "ipv6": null,
+    "updated_at": 1761919104,
+    "next_index4": 5,
     "next_index6": 0,
     "next_prefer_v6": false,
     "blacklist": {},
-    "whitelist": {},
-    "ewma_latency4": 0,
+    "whitelist": {
+      "142.250.217.110": true,
+      "142.250.217.78": true,
+      "142.250.69.174": true,
+      "142.250.73.110": true,
+      "142.250.73.142": true,
+      "142.250.73.78": true,
+      "142.251.33.78": true
+    },
+    "ewma_latency4": 524.5815273403692,
     "ewma_latency6": 0
   }
 }
-

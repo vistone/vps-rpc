@@ -211,6 +211,71 @@ func (c *Config) GetServerAddr() string {
 	return "0.0.0.0:" + strconv.Itoa(c.Server.Port)
 }
 
+// Validate 对关键配置进行集中校验，返回警告信息切片
+// 仅做语义与边界检查，不修改配置
+func (c *Config) Validate() []string {
+    var warns []string
+    if c.Server.Port <= 0 || c.Server.Port > 65535 {
+        warns = append(warns, "server.port 非法，建议 1-65535 范围内的端口")
+    }
+    // durations: best-effort 解析，失败给出警告
+    if c.Quic.MaxIdleTimeout != "" {
+        if _, err := time.ParseDuration(c.Quic.MaxIdleTimeout); err != nil {
+            warns = append(warns, "quic.max_idle_timeout 解析失败: "+err.Error())
+        }
+    }
+    if c.Quic.HandshakeIdleTimeout != "" {
+        if _, err := time.ParseDuration(c.Quic.HandshakeIdleTimeout); err != nil {
+            warns = append(warns, "quic.handshake_idle_timeout 解析失败: "+err.Error())
+        }
+    }
+    if c.Crawler.DefaultTimeout != "" {
+        if _, err := time.ParseDuration(c.Crawler.DefaultTimeout); err != nil {
+            warns = append(warns, "crawler.default_timeout 解析失败: "+err.Error())
+        }
+    }
+    if c.Crawler.DedupeWindow != "" {
+        if _, err := time.ParseDuration(c.Crawler.DedupeWindow); err != nil {
+            warns = append(warns, "crawler.dedupe_window 解析失败: "+err.Error())
+        }
+    }
+    if c.Client.DefaultTimeout != "" {
+        if _, err := time.ParseDuration(c.Client.DefaultTimeout); err != nil {
+            warns = append(warns, "client.default_timeout 解析失败: "+err.Error())
+        }
+    }
+    if c.Client.Retry.InitialDelay != "" {
+        if _, err := time.ParseDuration(c.Client.Retry.InitialDelay); err != nil {
+            warns = append(warns, "client.retry.initial_delay 解析失败: "+err.Error())
+        }
+    }
+    if c.Client.Retry.MaxDelay != "" {
+        if _, err := time.ParseDuration(c.Client.Retry.MaxDelay); err != nil {
+            warns = append(warns, "client.retry.max_delay 解析失败: "+err.Error())
+        }
+    }
+    if c.DNS.RefreshInterval != "" {
+        if _, err := time.ParseDuration(c.DNS.RefreshInterval); err != nil {
+            warns = append(warns, "dns.refresh_interval 解析失败: "+err.Error())
+        }
+    }
+    if c.Admin.DefaultMaxLogLines < 0 {
+        warns = append(warns, "admin.default_max_log_lines 应为非负整数")
+    }
+    if c.Admin.MaxLogLines <= 0 {
+        warns = append(warns, "admin.max_log_lines 应为正整数")
+    } else if c.Admin.DefaultMaxLogLines > c.Admin.MaxLogLines {
+        warns = append(warns, "admin.default_max_log_lines 不应大于 admin.max_log_lines")
+    }
+    if c.DNS.Enabled && c.DNS.DBPath == "" {
+        warns = append(warns, "dns.enabled=true 但未设置 dns.db_path，将无法持久化DNS池")
+    }
+    if c.Center.Address != "" && len(c.Peer.Seeds) > 0 {
+        warns = append(warns, "已配置 center.address，同时设置了 peer.seeds，注意混合模式的行为")
+    }
+    return warns
+}
+
 // GetQuicMaxIdleTimeout 获取QUIC最大空闲超时
 // 将配置中的字符串格式超时时间转换为time.Duration类型
 // 返回值:

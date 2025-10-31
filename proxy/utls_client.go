@@ -312,34 +312,82 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 	// 若启用DNS池，选择一个直连IP作为目标地址（保持 SNI/Host 为原域名）
 	var selectedIP string
 	var selectedIsV6 bool
+	// 策略：优先白名单IP直连，偶尔用域名探测新IP（每10次有1次）
+	useDomainProbe := false
 	if c.dns != nil {
+		probeCounter := time.Now().UnixNano() % 10
+		useDomainProbe = (probeCounter == 0)
+		
+		if !useDomainProbe {
+			// 优先使用白名单IP池直连（NextIP会合并whitelist到候选）
+			if ip, isV6, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
+				parsed, _ := url.Parse(req.Url)
+				port := "443"
+				if parsed != nil && parsed.Scheme == "http" { port = "80" }
+				selectedIP, selectedIsV6, addr = ip, isV6, net.JoinHostPort(ip, port)
+				log.Printf("[route] target=%s via_ip=%s ipv6=%v (whitelist-direct)", host, ip, isV6)
+			}
+		} else {
+			// 探测模式：用域名访问，触发DNS解析以发现新IP
+			log.Printf("[probe] target=%s via_domain (discovery)", host)
+			// 异步触发深度探测，不阻塞请求
+			go func() {
+				ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel2()
+				if rec, err := c.dns.resolveAndStore(ctx2, host); err == nil && rec != nil {
+					log.Printf("[probe] discovered %d IPv4 + %d IPv6 for %s", len(rec.IPv4), len(rec.IPv6), host)
+				}
+			}()
+			// 同时使用当前已知IP直连（如果可用），加速响应
+			if ip, _, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
+				parsed, _ := url.Parse(req.Url)
+				port := "443"
+				if parsed != nil && parsed.Scheme == "http" { port = "80" }
+				selectedIP, selectedIsV6, addr = ip, false, net.JoinHostPort(ip, port)
+				log.Printf("[route] target=%s via_ip=%s (probe-mode-with-ip)", host, ip)
+			} else {
+				addr = extractHostPort(req.Url)
+			}
+		}
+		
 		// 自动注册域名到ProbeManager进行定期探测
 		if pm := GetGlobalProbeManager(); pm != nil {
 			pm.RegisterDomain(host)
 		}
-		// 若池内总IP数 < 2，先做一次强化探测以丰富池子
-		if v4a, v6a, e := c.dns.GetIPs(timeoutCtx, host); e == nil {
-			if len(v4a)+len(v6a) < 2 {
-				ctx2, cancel2 := context.WithTimeout(timeoutCtx, 2*time.Second)
-				_, _ = c.dns.resolveAndStore(ctx2, host)
-				cancel2()
-			}
-		}
-		// 双栈并行：若同时存在v4与v6，各挑一个并发请求，先返回者为准
-		if v4s, v6s, e := c.dns.GetIPs(timeoutCtx, host); e == nil && (len(v4s) > 0 || len(v6s) > 0) {
+	}
+	
+	// 双栈并行逻辑（仅在非探测模式且有多个候选时）
+	if c.dns != nil && !useDomainProbe {
+		v4s, v6s, _ := c.dns.GetIPs(timeoutCtx, host)
+		if len(v4s) > 1 || len(v6s) > 1 {
 			// 计算端口
 			parsed, _ := url.Parse(req.Url)
 			port := "443"
 			if parsed != nil && parsed.Scheme == "http" {
 				port = "80"
 			}
-			// 候选目标
+			// 候选目标：使用NextIP轮询选择
 			var addrV4, addrV6 string
-			if len(v4s) > 0 {
-				addrV4 = net.JoinHostPort(v4s[0], port)
-			}
+			var ipV4, ipV6 string
+			// 尝试获取IPv6
 			if len(v6s) > 0 {
-				addrV6 = net.JoinHostPort(v6s[0], port)
+				if ip, isV6, e := c.dns.NextIP(timeoutCtx, host); e == nil && isV6 && ip != "" {
+					ipV6, addrV6 = ip, net.JoinHostPort(ip, port)
+				} else if len(v4s) == 0 {
+					// 若IPv6失败且无IPv4，回退到GetIPs的第一个
+					addrV6 = net.JoinHostPort(v6s[0], port)
+					ipV6 = v6s[0]
+				}
+			}
+			// 尝试获取IPv4
+			if len(v4s) > 0 {
+				if ip, isV6, e := c.dns.NextIP(timeoutCtx, host); e == nil && !isV6 && ip != "" {
+					ipV4, addrV4 = ip, net.JoinHostPort(ip, port)
+				} else if addrV6 == "" {
+					// 若IPv4轮询失败且无IPv6备选，回退到GetIPs的第一个
+					addrV4 = net.JoinHostPort(v4s[0], port)
+					ipV4 = v4s[0]
+				}
 			}
 			// 若同时存在两族，则并发；否则走单一路径
 			if addrV4 != "" && addrV6 != "" {
@@ -420,8 +468,8 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 					}
 					resCh <- result{nil, ip, isV6, fmt.Errorf("both h2/h1 failed")}
 				}
-				go doOnce(addrV6, v6s[0], true)
-				go doOnce(addrV4, v4s[0], false)
+				go doOnce(addrV6, ipV6, true)
+				go doOnce(addrV4, ipV4, false)
 				// 先到先得
 				r := <-resCh
 				if r.err == nil && r.resp != nil {
@@ -435,10 +483,10 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 			}
 			// 单一路径（只有一种族）
 			if addrV6 != "" {
-				selectedIP, selectedIsV6, addr = v6s[0], true, addrV6
+				selectedIP, selectedIsV6, addr = ipV6, true, addrV6
 			}
 			if addrV4 != "" {
-				selectedIP, selectedIsV6, addr = v4s[0], false, addrV4
+				selectedIP, selectedIsV6, addr = ipV4, false, addrV4
 			}
 		} else if ip, isV6, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
 			selectedIP = ip
@@ -521,12 +569,16 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		if rerr != nil {
 			return nil, fmt.Errorf("读取响应体失败: %w", rerr)
 		}
-		headers := make(map[string]string)
+        headers := make(map[string]string)
 		for k, v := range resp.Header {
 			if len(v) > 0 {
 				headers[k] = v[0]
 			}
 		}
+        if selectedIP != "" {
+            headers["X-VPS-IP"] = selectedIP
+            headers["X-VPS-LatencyMs"] = fmt.Sprintf("%d", time.Since(start).Milliseconds())
+        }
 		// 记录IP结果（若启用DNS池且使用了直连IP）
 		if c.dns != nil && selectedIP != "" {
 			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
@@ -551,12 +603,16 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		if rerr != nil {
 			return nil, fmt.Errorf("读取响应体失败: %w", rerr)
 		}
-		headers := make(map[string]string)
+        headers := make(map[string]string)
 		for k, v := range resp.Header {
 			if len(v) > 0 {
 				headers[k] = v[0]
 			}
 		}
+        if selectedIP != "" {
+            headers["X-VPS-IP"] = selectedIP
+            headers["X-VPS-LatencyMs"] = fmt.Sprintf("%d", time.Since(start).Milliseconds())
+        }
 		if c.dns != nil && selectedIP != "" {
 			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
 			_ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
@@ -574,12 +630,16 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		if rerr != nil {
 			return nil, fmt.Errorf("读取响应体失败: %w", rerr)
 		}
-		headers := make(map[string]string)
+        headers := make(map[string]string)
 		for k, v := range resp.Header {
 			if len(v) > 0 {
 				headers[k] = v[0]
 			}
 		}
+        if selectedIP != "" {
+            headers["X-VPS-IP"] = selectedIP
+            headers["X-VPS-LatencyMs"] = fmt.Sprintf("%d", time.Since(start).Milliseconds())
+        }
 		if c.dns != nil && selectedIP != "" {
 			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
 			_ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())

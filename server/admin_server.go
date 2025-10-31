@@ -136,35 +136,79 @@ func (s *AdminServer) GetStats(ctx context.Context, req *rpc.StatsRequest) (*rpc
 //	*rpc.UpdateConfigResponse: 配置更新响应对象
 //	error: 可能发生的错误
 func (s *AdminServer) UpdateConfig(ctx context.Context, req *rpc.UpdateConfigRequest) (*rpc.UpdateConfigResponse, error) {
-	if req == nil || req.ConfigKey == "" {
-		return &rpc.UpdateConfigResponse{
-			Success: false,
-			Error:   "配置键不能为空",
-		}, nil
-	}
+    if req == nil || req.ConfigKey == "" {
+        return &rpc.UpdateConfigResponse{Success: false, Error: "配置键不能为空"}, nil
+    }
 
-	// 这里实现配置更新逻辑
-	// 注意：实际的配置更新可能需要重新加载配置文件或使用配置管理接口
-	// 这里提供一个基础框架
+    s.logger.WithFields(map[string]interface{}{
+        "config_key":   req.ConfigKey,
+        "config_value": req.ConfigValue,
+    }).Info("配置更新请求")
 
-	s.logger.WithFields(map[string]interface{}{
-		"config_key":   req.ConfigKey,
-		"config_value": req.ConfigValue,
-	}).Info("配置更新请求")
+    // 受控热更白名单
+    apply := func() (bool, string) {
+        switch req.ConfigKey {
+        case "logging.level":
+            if req.ConfigValue == "" { return false, "logging.level 不能为空" }
+            s.config.Logging.Level = req.ConfigValue
+            return true, "logging.level 已更新（部分组件可能需要重启生效）"
+        case "logging.format":
+            if req.ConfigValue == "" { return false, "logging.format 不能为空" }
+            s.config.Logging.Format = req.ConfigValue
+            return true, "logging.format 已更新（部分组件可能需要重启生效）"
+        case "admin.default_max_log_lines":
+            var v int
+            if err := json.Unmarshal([]byte(req.ConfigValue), &v); err != nil || v < 0 {
+                return false, "admin.default_max_log_lines 必须为非负整数（JSON 数字）"
+            }
+            s.config.Admin.DefaultMaxLogLines = v
+            if s.config.Admin.MaxLogLines > 0 && v > s.config.Admin.MaxLogLines {
+                s.config.Admin.DefaultMaxLogLines = s.config.Admin.MaxLogLines
+            }
+            return true, "admin.default_max_log_lines 已更新"
+        case "admin.max_log_lines":
+            var v int
+            if err := json.Unmarshal([]byte(req.ConfigValue), &v); err != nil || v <= 0 {
+                return false, "admin.max_log_lines 必须为正整数（JSON 数字）"
+            }
+            s.config.Admin.MaxLogLines = v
+            if s.config.Admin.DefaultMaxLogLines > v {
+                s.config.Admin.DefaultMaxLogLines = v
+            }
+            return true, "admin.max_log_lines 已更新"
+        case "dns.enabled":
+            var b bool
+            if err := json.Unmarshal([]byte(req.ConfigValue), &b); err != nil {
+                return false, "dns.enabled 必须为布尔（JSON true/false）"
+            }
+            s.config.DNS.Enabled = b
+            return true, "dns.enabled 已更新（运行中切换仅影响后续逻辑）"
+        case "dns.refresh_interval":
+            if req.ConfigValue == "" { s.config.DNS.RefreshInterval = ""; return true, "dns.refresh_interval 已清空" }
+            if _, err := time.ParseDuration(req.ConfigValue); err != nil {
+                return false, "dns.refresh_interval 解析失败: " + err.Error()
+            }
+            s.config.DNS.RefreshInterval = req.ConfigValue
+            return true, "dns.refresh_interval 已更新"
+        default:
+            return false, "不支持的配置键"
+        }
+    }
 
-	// 返回当前配置（JSON格式）
-	configJSON, err := json.Marshal(s.config)
-	if err != nil {
-		return &rpc.UpdateConfigResponse{
-			Success: false,
-			Error:   "序列化配置失败: " + err.Error(),
-		}, nil
-	}
+    ok, note := apply()
+    if !ok {
+        return &rpc.UpdateConfigResponse{Success: false, Error: note}, nil
+    }
 
-	return &rpc.UpdateConfigResponse{
-		Success:       true,
-		UpdatedConfig: string(configJSON),
-	}, nil
+    // 校验并返回最新配置
+    if warns := s.config.Validate(); len(warns) > 0 {
+        for _, w := range warns { s.logger.WithField("warn", w).Warn("配置校验警告") }
+    }
+    configJSON, err := json.Marshal(s.config)
+    if err != nil {
+        return &rpc.UpdateConfigResponse{Success: true, UpdatedConfig: "{}", Error: "序列化配置失败: "+err.Error()}, nil
+    }
+    return &rpc.UpdateConfigResponse{Success: true, UpdatedConfig: string(configJSON)}, nil
 }
 
 // GetLogs 获取日志

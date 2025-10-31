@@ -26,6 +26,8 @@ func main() {
     var path string
     var ip4 string
     var ip6 string
+    var random bool
+    var rounds int
 
     flag.StringVar(&addr, "addr", "127.0.0.1:4242", "目标 gRPC 地址 host:port")
     flag.StringVar(&mode, "mode", "burst", "测试模式：burst | mix")
@@ -34,6 +36,8 @@ func main() {
     flag.StringVar(&path, "path", "/rt/earth/PlanetoidMetadata", "混合模式的路径")
     flag.StringVar(&ip4, "ip4", "", "混合模式使用的IPv4")
     flag.StringVar(&ip6, "ip6", "", "混合模式使用的IPv6")
+    flag.BoolVar(&random, "random", false, "启用随机并发(3-8)的轮询压测，仅对 burst 模式有效")
+    flag.IntVar(&rounds, "rounds", 10, "随机并发轮数(仅在 --random 下生效)")
     flag.Parse()
 
     cli, err := client.NewClient(&client.ClientConfig{
@@ -51,7 +55,11 @@ func main() {
 
     switch strings.ToLower(mode) {
     case "burst":
-        runBurst(cli, n)
+        if random {
+            runRandomBurst(cli, rounds)
+        } else {
+            runBurst(cli, n)
+        }
     case "mix":
         if ip4 == "" || ip6 == "" {
             fmt.Println("混合模式需要提供 --ip4 与 --ip6")
@@ -83,6 +91,32 @@ func runBurst(cli *client.Client, n int) {
         time.Sleep(120 * time.Millisecond)
     }
     fmt.Printf("ok=%d/%d\n", ok, n)
+}
+
+// runRandomBurst 以随机并发(3-8)进行多轮压测，避免固定并发触发风控
+func runRandomBurst(cli *client.Client, rounds int) {
+    url := "https://kh.google.com/rt/earth/PlanetoidMetadata"
+    if rounds <= 0 { rounds = 1 }
+    okTotal := 0
+    for r := 1; r <= rounds; r++ {
+        // 随机并发 3-8
+        c := int(time.Now().UnixNano()%6) + 3 // 简易随机，无需引入额外包
+        if c < 3 { c = 3 } else if c > 8 { c = 8 }
+        done := make(chan struct{}, c)
+        for i := 0; i < c; i++ {
+            go func() {
+                ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+                _, err := cli.Fetch(ctx, &rpc.FetchRequest{Url: url, TlsClient: rpc.TLSClientType_CHROME})
+                cancel()
+                if err == nil { okTotal++ }
+                done <- struct{}{}
+            }()
+        }
+        for i := 0; i < c; i++ { <-done }
+        fmt.Printf("[round %d] concurrency=%d\n", r, c)
+        time.Sleep(200 * time.Millisecond)
+    }
+    fmt.Printf("ok_total=%d\n", okTotal)
 }
 
 func runMix(cli *client.Client, n int, domain, pth, ip4, ip6 string) {

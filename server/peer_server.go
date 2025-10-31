@@ -63,10 +63,14 @@ func (s *PeerServiceServer) ExchangeDNS(ctx context.Context, req *rpc.ExchangeDN
 	// 处理远程节点发送过来的DNS记录
 	// 注意：这里应该合并远程记录到本地，但为了安全性，只处理观测报告
 	// 黑白名单保持本地独立管理
-	if req.Records != nil {
-		log.Printf("[peer] 收到 %d 个远程DNS记录", len(req.Records))
-		// TODO: 合并远程记录到本地DNS池
-	}
+    if req.Records != nil {
+        log.Printf("[peer] 收到 %d 个远程DNS记录", len(req.Records))
+        if s.dnsPool != nil {
+            if err := s.dnsPool.MergeFromPeer(req.Records); err != nil {
+                log.Printf("[peer] 合并远程DNS记录失败: %v", err)
+            }
+        }
+    }
 
 	return &rpc.ExchangeDNSResponse{Records: localRecords}, nil
 }
