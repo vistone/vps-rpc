@@ -167,7 +167,7 @@ func PrewarmConnections(ctx context.Context) {
 						log.Printf("[prewarm] ✗ %s -> %s: 创建请求失败: %v", d, a, reqErr)
 						return
 					}
-					req.Host = d // 设置Host头为域名
+					req.Host = d             // 设置Host头为域名
 					resp, err := h2c.Do(req) // 使用HTTP/2客户端，匹配服务器的HTTP/2协议
 					cancel()
 
@@ -185,15 +185,15 @@ func PrewarmConnections(ctx context.Context) {
 						// 检查错误类型：如果是协议错误（HEAD请求返回数据）或HTTP/2握手失败，连接已建立
 						errStr := err.Error()
 						// 忽略这些错误，因为连接已经建立（即使HEAD请求返回了数据）
-						if strings.Contains(errStr, "protocol error") || 
-						   strings.Contains(errStr, "HEAD request") ||
-						   strings.Contains(errStr, "http2") ||
-						   strings.Contains(errStr, "malformed HTTP response") {
+						if strings.Contains(errStr, "protocol error") ||
+							strings.Contains(errStr, "HEAD request") ||
+							strings.Contains(errStr, "http2") ||
+							strings.Contains(errStr, "malformed HTTP response") {
 							// 连接已建立，只是HEAD请求返回数据导致协议错误，视为成功
 							success = true
 						}
 					}
-					
+
 					if success {
 						// 连接建立成功（即使有协议错误），缓存HTTP/2客户端到全局预建池
 						globalPrewarmMu.Lock()
@@ -276,7 +276,7 @@ func PrewarmSingleConnection(ctx context.Context, domain, address string) {
 	}
 
 	chid := tempClient.getClientHelloID()
-	
+
 	// 修复：直接使用HTTP/2客户端预热，因为Google服务器只支持HTTP/2
 	// 使用HTTP/1.1会收到HTTP/2握手帧导致"malformed HTTP response"错误
 	h2c := tempClient.buildHTTP2Client(domain, address, chid)
@@ -312,15 +312,15 @@ func PrewarmSingleConnection(ctx context.Context, domain, address string) {
 	} else if err != nil {
 		// 检查错误类型：如果是协议错误（HEAD请求返回数据），连接已建立
 		errStr := err.Error()
-		if strings.Contains(errStr, "protocol error") || 
-		   strings.Contains(errStr, "HEAD request") ||
-		   strings.Contains(errStr, "http2") ||
-		   strings.Contains(errStr, "malformed HTTP response") {
+		if strings.Contains(errStr, "protocol error") ||
+			strings.Contains(errStr, "HEAD request") ||
+			strings.Contains(errStr, "http2") ||
+			strings.Contains(errStr, "malformed HTTP response") {
 			// 连接已建立，只是HEAD请求返回数据导致协议错误，视为成功
 			success = true
 		}
 	}
-	
+
 	globalPrewarmMu.Lock()
 	if success {
 		// 连接建立成功（即使有协议错误），加入全局预建池
@@ -444,7 +444,7 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName 
 	d := &net.Dialer{Timeout: c.config.Timeout}
 	host, _, _ := net.SplitHostPort(address)
 	targetIP := net.ParseIP(host)
-	
+
 	// 判断是否应该绑定IPv6源地址
 	shouldBindIPv6 := false
 	if targetIP != nil {
@@ -464,7 +464,7 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, network, address, serverName 
 			shouldBindIPv6 = true
 		}
 	}
-	
+
 	// 轮询使用IPv6源地址进行负载分散
 	if shouldBindIPv6 {
 		if src := NextIPv6LocalAddr(); src != nil {
@@ -643,13 +643,15 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 	if c.dns != nil {
 		probeCounter := time.Now().UnixNano() % 10
 		useDomainProbe = (probeCounter == 0)
-		
+
 		if !useDomainProbe {
 			// 优先使用白名单IP池直连（NextIP会合并whitelist到候选）
 			if ip, isV6, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
 				parsed, _ := url.Parse(req.Url)
 				port := "443"
-				if parsed != nil && parsed.Scheme == "http" { port = "80" }
+				if parsed != nil && parsed.Scheme == "http" {
+					port = "80"
+				}
 				selectedIP, selectedIsV6, addr = ip, isV6, net.JoinHostPort(ip, port)
 				log.Printf("[route] target=%s via_ip=%s ipv6=%v (whitelist-direct)", host, ip, isV6)
 			}
@@ -668,20 +670,22 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 			if ip, _, e := c.dns.NextIP(timeoutCtx, host); e == nil && ip != "" {
 				parsed, _ := url.Parse(req.Url)
 				port := "443"
-				if parsed != nil && parsed.Scheme == "http" { port = "80" }
+				if parsed != nil && parsed.Scheme == "http" {
+					port = "80"
+				}
 				selectedIP, selectedIsV6, addr = ip, false, net.JoinHostPort(ip, port)
 				log.Printf("[route] target=%s via_ip=%s (probe-mode-with-ip)", host, ip)
 			} else {
 				addr = extractHostPort(req.Url)
 			}
 		}
-		
+
 		// 自动注册域名到ProbeManager进行定期探测
 		if pm := GetGlobalProbeManager(); pm != nil {
 			pm.RegisterDomain(host)
 		}
 	}
-	
+
 	// 双栈并行逻辑（仅在非探测模式且有多个候选时）
 	if c.dns != nil && !useDomainProbe {
 		v4s, v6s, _ := c.dns.GetIPs(timeoutCtx, host)
@@ -912,16 +916,16 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		if rerr != nil {
 			return nil, fmt.Errorf("读取响应体失败: %w", rerr)
 		}
-        headers := make(map[string]string)
+		headers := make(map[string]string)
 		for k, v := range resp.Header {
 			if len(v) > 0 {
 				headers[k] = v[0]
 			}
 		}
-        if selectedIP != "" {
-            headers["X-VPS-IP"] = selectedIP
-            headers["X-VPS-LatencyMs"] = fmt.Sprintf("%d", time.Since(start).Milliseconds())
-        }
+		if selectedIP != "" {
+			headers["X-VPS-IP"] = selectedIP
+			headers["X-VPS-LatencyMs"] = fmt.Sprintf("%d", time.Since(start).Milliseconds())
+		}
 		// 记录IP结果（若启用DNS池且使用了直连IP）
 		if c.dns != nil && selectedIP != "" {
 			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
@@ -961,16 +965,16 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		if rerr != nil {
 			return nil, fmt.Errorf("读取响应体失败: %w", rerr)
 		}
-        headers := make(map[string]string)
+		headers := make(map[string]string)
 		for k, v := range resp.Header {
 			if len(v) > 0 {
 				headers[k] = v[0]
 			}
 		}
-        if selectedIP != "" {
-            headers["X-VPS-IP"] = selectedIP
-            headers["X-VPS-LatencyMs"] = fmt.Sprintf("%d", time.Since(start).Milliseconds())
-        }
+		if selectedIP != "" {
+			headers["X-VPS-IP"] = selectedIP
+			headers["X-VPS-LatencyMs"] = fmt.Sprintf("%d", time.Since(start).Milliseconds())
+		}
 		if c.dns != nil && selectedIP != "" {
 			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
 			_ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())
@@ -1003,16 +1007,16 @@ func (c *UTLSClient) Fetch(ctx context.Context, req *rpc.FetchRequest) (*rpc.Fet
 		if rerr != nil {
 			return nil, fmt.Errorf("读取响应体失败: %w", rerr)
 		}
-        headers := make(map[string]string)
+		headers := make(map[string]string)
 		for k, v := range resp.Header {
 			if len(v) > 0 {
 				headers[k] = v[0]
 			}
 		}
-        if selectedIP != "" {
-            headers["X-VPS-IP"] = selectedIP
-            headers["X-VPS-LatencyMs"] = fmt.Sprintf("%d", time.Since(start).Milliseconds())
-        }
+		if selectedIP != "" {
+			headers["X-VPS-IP"] = selectedIP
+			headers["X-VPS-LatencyMs"] = fmt.Sprintf("%d", time.Since(start).Milliseconds())
+		}
 		if c.dns != nil && selectedIP != "" {
 			_ = c.dns.ReportResult(host, selectedIP, resp.StatusCode)
 			_ = c.dns.ReportLatency(host, selectedIP, time.Since(start).Milliseconds())

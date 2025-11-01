@@ -1,11 +1,9 @@
 package main
 
 import (
-    "context"
     "os"
     "os/signal"
     "syscall"
-    "time"
 
     "vps-rpc/client"
     "vps-rpc/config"
@@ -64,14 +62,14 @@ func main() {
 			defer probe.Close()
             defer dnsPool.Close()
 
-			// 预热连接池：为DNS池中的所有IP建立热连接
-			// 在后台异步预热，不阻塞服务启动
-			go func() {
-				prewarmCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-				defer cancel()
-				proxy.PrewarmConnections(prewarmCtx)
-			}()
-			log.Info("连接池预热已启动（后台异步进行）")
+			// 不再启动时批量预热：IPv6池可能有100+个IP，预热会阻塞
+			// 改为按需预热：仅在发现新IP时自动预热，避免启动时耗时过长
+			// go func() {
+			// 	prewarmCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			// 	defer cancel()
+			// 	proxy.PrewarmConnections(prewarmCtx)
+			// }()
+			log.Info("连接池采用按需预热模式（避免启动时批量预热）")
 		}
 	}
 
