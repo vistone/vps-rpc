@@ -256,13 +256,15 @@ func PrewarmSingleConnection(ctx context.Context, domain, address string) {
 
 	key := domain + "|" + address
 
-	// 检查是否已经预热过
-	globalPrewarmMu.RLock()
+	// 原子检查和标记：防止并发预热同一个IP
+	globalPrewarmMu.Lock()
 	if _, ok := globalPrewarmedH2Clients[key]; ok {
-		globalPrewarmMu.RUnlock()
+		globalPrewarmMu.Unlock()
 		return // 已经预热过
 	}
-	globalPrewarmMu.RUnlock()
+	// 先标记为"预热中"，避免重复
+	globalPrewarmedH2Clients[key] = nil // 临时标记
+	globalPrewarmMu.Unlock()
 
 	// 创建临时客户端用于预热
 	tempClient := &UTLSClient{
@@ -282,6 +284,9 @@ func PrewarmSingleConnection(ctx context.Context, domain, address string) {
 	// 解析IP地址
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
+		globalPrewarmMu.Lock()
+		delete(globalPrewarmedH2Clients, key) // 清理临时标记
+		globalPrewarmMu.Unlock()
 		return
 	}
 
@@ -290,6 +295,9 @@ func PrewarmSingleConnection(ctx context.Context, domain, address string) {
 	req, reqErr := http.NewRequestWithContext(prewarmCtx, "HEAD", "https://"+host+":"+port, nil)
 	if reqErr != nil {
 		cancel()
+		globalPrewarmMu.Lock()
+		delete(globalPrewarmedH2Clients, key) // 清理临时标记
+		globalPrewarmMu.Unlock()
 		return
 	}
 	req.Host = domain
@@ -313,19 +321,23 @@ func PrewarmSingleConnection(ctx context.Context, domain, address string) {
 		}
 	}
 	
+	globalPrewarmMu.Lock()
 	if success {
 		// 连接建立成功（即使有协议错误），加入全局预建池
-		globalPrewarmMu.Lock()
 		globalPrewarmedH2Clients[key] = h2c
-		globalPrewarmMu.Unlock()
 		if resp != nil {
 			log.Printf("[prewarm] ✓ 新IP预热成功: %s -> %s (状态码: %d)", domain, address, resp.StatusCode)
 		} else {
 			log.Printf("[prewarm] ✓ 新IP预热成功: %s -> %s (连接已建立，忽略协议错误)", domain, address)
 		}
-	} else if err != nil {
-		log.Printf("[prewarm] ✗ 新IP预热失败: %s -> %s: %v", domain, address, err)
+	} else {
+		// 失败，清理临时标记
+		delete(globalPrewarmedH2Clients, key)
+		if err != nil {
+			log.Printf("[prewarm] ✗ 新IP预热失败: %s -> %s: %v", domain, address, err)
+		}
 	}
+	globalPrewarmMu.Unlock()
 }
 
 // UA 选择：根据 TlsClient 类型选择与 uTLS 指纹一致的 UA 候选并随机取一

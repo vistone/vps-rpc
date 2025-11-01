@@ -1027,13 +1027,15 @@ func (p *DNSPool) ReportResult(domain, ip string, status int) error {
     } else if status == 200 {
         delete(rec.Blacklist, ip)
         rec.Whitelist[ip] = true
-        // 当IP返回200时，异步预热该IP的连接（不阻塞当前请求）
-        // 无论是新IP还是已有IP，都尝试预热，确保连接池是热的
-        go func(d, i string) {
-            ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-            defer cancel()
-            PrewarmSingleConnection(ctx, d, net.JoinHostPort(i, "443"))
-        }(domain, ip)
+        // 仅对新发现的IP进行预热，避免重复预热和死循环
+        // 预热已在全局池中有去重保护，这里只对真正新添加的IP预热
+        if !ipPresent {
+            go func(d, i string) {
+                ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+                defer cancel()
+                PrewarmSingleConnection(ctx, d, net.JoinHostPort(i, "443"))
+            }(domain, ip)
+        }
     }
     p.mu.Unlock()
     return p.persist()
